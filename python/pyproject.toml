@@ -1,0 +1,29 @@
+[project]
+name = "agent-knowledge-hub"
+version = "2.0.0"
+description = "Agentic RAG knowledge base with vector and graph retrieval"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+branch = true
+source = ["agents", "api", "orchestrator", "services", "utils"]
+omit = ["tests/*", "benchmarks/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 60
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+# 先把 CI 建立在确定性错误检查上；格式和复杂度规则后续逐步收紧。
+select = ["E9", "F63", "F7", "F82"]

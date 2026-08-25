@@ -1,0 +1,8 @@
+# ── 重型 ML 依赖 (首次安装需下载模型 ~5GB) ─────────────
+# 只想快速体验核心功能时, 只需安装 requirements-core.txt,
+# 解析引擎会自动降级到 pymupdf / python-docx 路径。
+marker-pdf>=1.5.0          # PDF → 结构化 Markdown (内置 surya OCR + 表格)
+docling>=2.15.0            # Office 文档 (docx/pptx) 结构化解析
+torch>=2.0.0
+sentence-transformers>=3.0.0   # BGE-Reranker + 本地 Embedding
+transformers>=4.40.0

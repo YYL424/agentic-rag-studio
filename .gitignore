@@ -65,3 +65,12 @@ secrets.yaml
 .env
 .env.*
 !.env.example
+
+# ── Test / benchmark artifacts ────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+python/benchmarks/results/*.json
+python/benchmarks/results/*.jsonl
+!python/benchmarks/results/.gitkeep

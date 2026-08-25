@@ -1,172 +1,62 @@
-# 多Agent企业知识管理系统 — 面试项目全套方案
+# AgentKnowledgeHub 路线图
 
-> 本文档是项目的整体规划方案，记录了系统架构设计、技术选型、实施计划和面试资料框架。
-> 具体实现请参考各语言目录下的代码，详细面试资料参见本 docs/ 目录下的其他文档。
+## 当前基线
 
----
+已完成：
 
-## 一、项目定位与架构设计
+- 三条 LangGraph 工作流和 memory checkpointer。
+- 文档结构化解析、语义/结构分块、结构化知识抽取。
+- 向量与图谱并行检索、可选 reranker、有限轮次 Self-RAG。
+- HITL 审核及驳回写入门禁。
+- chunk 级增量更新和跨向量/图谱 provenance 清理。
+- FastAPI、SSE、Web UI、MCP、健康检查。
+- 上传隔离、可选 API Key、关系 allowlist、只读 Cypher。
+- pytest、覆盖率门槛、Ruff、Python 3.11–3.13 CI。
+- 30 题示例 golden set 和可追溯评测元数据。
 
-本项目名为 **AgentKnowledgeHub**，是一个企业级多Agent知识管理系统，包含4个核心Agent协作完成知识全生命周期管理。
+## P0：作品集发布前
 
-### 系统架构（4 Agent 混合编排）
+| 工作 | 验收标准 | 状态 |
+|---|---|---|
+| 修复关键一致性与安全问题 | HITL、增量 provenance、上传与 Cypher 均有回归测试 | 已完成 |
+| 建立 CI | 3 个 Python 版本运行静态检查和覆盖率门槛 | 已完成，待远端首次运行 |
+| 清理项目表述 | README、简历和面试文档不含无来源指标 | 已完成 |
+| 真实依赖 smoke test | Neo4j + Qdrant 容器完成上传、问答、修改、删除闭环 | 待完成 |
+| 演示资产 | 录制 2–3 分钟 GIF/视频，展示来源与更新计数 | 待完成 |
 
-```mermaid
-graph TD
-    User[用户] --> Orchestrator[编排引擎]
-    Orchestrator --> DocAgent[文档解析Agent]
-    Orchestrator --> KnowAgent[知识抽取Agent]
-    Orchestrator --> QAAgent[问答Agent]
-    Orchestrator --> UpdateAgent[知识更新Agent]
+## P1：提高简历含金量
 
-    DocAgent --> VectorDB[向量数据库]
-    KnowAgent --> KG[知识图谱Neo4j]
-    QAAgent --> VectorDB
-    QAAgent --> KG
-    UpdateAgent --> CDC[CDC增量监听]
-    CDC --> VectorDB
-    CDC --> KG
-```
+1. **真实评测集**：至少 200 个由人工审核的问题，覆盖事实、比较、关系、多跳、无答案五类；固定模型和随机性，重复运行并给置信区间。
+2. **端到端 CI**：用 service containers 启动 Neo4j/Qdrant，验证 schema、索引、upsert、删除和 readiness。
+3. **异步作业模型**：上传后返回 job ID，后台处理，提供状态、重试、取消和失败原因，避免长文档占用 HTTP 请求。
+4. **一致性补偿**：ingestion job + outbox + 幂等键；模拟单库故障并验证重放。
+5. **可观测性**：记录节点延迟、token、召回数、Self-RAG 轮次和错误率；提供一张 Grafana 或 LangSmith trace 截图。
 
-### 4个Agent职责
+## P2：生产化能力
 
-| Agent | 职责 | 关键技术 |
-|-------|------|----------|
-| 文档解析Agent | PDF/图片/表格多模态解析 | 多模态RAG、OCR、表格识别 |
-| 知识抽取Agent | 实体/关系/事件抽取，构建知识图谱 | NER、关系抽取、Neo4j |
-| 问答Agent | 混合检索 + 多跳推理 + 回答生成 | GraphRAG + 向量检索混合 |
-| 知识更新Agent | 监听变更、增量更新图谱和向量库 | CDC、事件驱动、增量索引 |
+- OIDC/OAuth2、用户与 RBAC、租户隔离、审计日志。
+- 对象存储、恶意文件扫描、内容类型探测和配额。
+- Neo4j/Qdrant 备份恢复、迁移脚本和容量规划。
+- Kafka/watcher 生命周期托管、死信队列、事件去重和 offset 恢复。
+- 数据删除合规、PII 脱敏和模型调用边界。
+- 限流、超时、熔断、查询预算和压测基线。
 
-### 技术栈对比（三语言）
+## 最有价值的三项下一步
 
-- **Python版**：LangGraph + LangChain + Neo4j + ChromaDB/PGVector + FastAPI
-- **Java版**：Spring AI + AgentEnsemble/LangChain4j + Neo4j + Milvus + Spring Boot
-- **Go版**：AgenticGoKit + pgvector + Neo4j Go Driver + Gin/Fiber
+如果目标是尽快用于求职，优先顺序建议是：
 
----
+1. 完成一次真实 Docker 端到端 smoke test，并保留命令和日志。
+2. 扩充人工 golden set，生成一份可公开复现的 benchmark 报告。
+3. 录制短演示并在 README 中展示，同时附架构图和失败场景。
 
-## 二、项目目录结构
+这三项比继续增加新框架或再做一种语言实现更能证明工程能力。
 
-```
-AgentKnowledgeHub/
-├── README.md                    # 超详细中文README（面向小白）
-├── docs/
-│   ├── project-plan.md          # 本文件：项目规划方案
-│   ├── architecture.md          # 架构设计详解
-│   ├── interview-guide.md       # 面试八股文 + STAR法则
-│   ├── resume-template.md       # 简历模板
-│   └── tech-deep-dive.md        # 技术深度讲解
-├── python/                      # Python 实现（最完整）
-│   ├── agents/
-│   │   ├── doc_parser_agent.py
-│   │   ├── knowledge_extract_agent.py
-│   │   ├── qa_agent.py
-│   │   └── knowledge_update_agent.py
-│   ├── orchestrator/
-│   │   └── graph.py             # LangGraph 编排
-│   ├── services/
-│   │   ├── vector_store.py
-│   │   ├── knowledge_graph.py
-│   │   ├── graph_rag.py         # GraphRAG 混合检索管道
-│   │   ├── cdc_processor.py     # CDC 增量处理器
-│   │   └── multimodal.py
-│   ├── api/
-│   │   └── main.py              # FastAPI 接口
-│   ├── config/
-│   ├── tests/
-│   └── requirements.txt
-├── java/                        # Java 实现
-│   ├── src/main/java/com/agenthub/
-│   │   ├── agent/
-│   │   ├── service/
-│   │   └── controller/
-│   ├── pom.xml
-│   └── README.md
-├── golang/                      # Go 实现
-│   ├── agent/
-│   ├── service/
-│   ├── api/
-│   ├── go.mod
-│   └── README.md
-└── docker-compose.yml           # 一键启动（Neo4j + VectorDB + API）
-```
+## Definition of Done
 
----
+一个能力只有在以下条件同时满足时才标记完成：
 
-## 三、核心技术亮点实现
-
-### 亮点1：多模态RAG
-
-- 文档解析Agent使用 LLM 视觉能力处理 PDF 中的图片、表格、流程图
-- 不同模态内容分别向量化，检索时加权融合
-- Python: `langchain.document_loaders` + `unstructured` 库 + `PyPDF2` + `Tesseract`
-- Java: Spring AI `DocumentReader` + Apache Tika
-
-### 亮点2：知识图谱（GraphRAG）
-
-- 知识抽取Agent从文本中提取三元组 (Entity, Relation, Entity)
-- 存入 Neo4j，问答时 Vector Search + Graph Traversal 混合检索
-- 关键：Cypher 查询生成、子图召回、多跳推理、社区摘要
-- 交叉重排序：路径推理×1.25、子图×1.15、社区摘要×1.1、向量×1.0
-
-### 亮点3：增量更新（CDC）
-
-- 知识更新Agent监听文档变更事件（Watchdog文件监听 + Kafka消息队列）
-- 差量对比：通过文件Hash和内容Diff，只处理新增/修改内容
-- 版本管理：知识节点带时间戳和版本号，支持回滚
-
----
-
-## 四、面试全套资料
-
-### 4.1 简历模板（→ 详见 resume-template.md）
-
-```
-项目名称：企业级多Agent知识管理系统
-项目角色：核心开发 / 独立开发
-技术栈：Python/LangGraph + Neo4j + PGVector + FastAPI + Docker
-项目描述：
-  - 设计并实现4-Agent混合编排架构，支持文档解析、知识抽取、智能问答、增量更新全流程
-  - 实现多模态RAG管道，支持PDF/图片/表格等混合文档解析，检索准确率提升35%
-  - 基于Neo4j构建企业知识图谱，支持多跳推理，相比纯向量检索F1提升22%
-  - 设计CDC驱动的增量更新机制，知识库更新延迟从小时级降至分钟级
-```
-
-### 4.2 STAR面试话术（→ 详见 interview-guide.md）
-
-**S（情境）**：在XX场景下，企业文档量大、格式多样，传统检索系统准确率低，知识更新滞后。
-
-**T（任务）**：我负责设计一个多Agent协作的知识管理系统，实现从文档解析到智能问答的全链路。
-
-**A（行动）**：
-- 将系统拆分为4个专职Agent，用LangGraph实现有向图编排
-- 文档解析Agent集成多模态能力处理PDF/图表
-- 知识抽取Agent基于LLM提取实体关系，存入Neo4j
-- 问答Agent实现GraphRAG混合检索策略
-- 更新Agent使用CDC监听实现增量更新
-
-**R（结果）**：检索准确率从78%提升至94%，知识更新延迟降低95%，支持10种以上文档格式。
-
-### 4.3 高频八股题（→ 详见 interview-guide.md，含30+完整答案）
-
-- 什么是Agent？与传统Chain有什么区别？
-- 多Agent系统的编排模式有哪些？各自优缺点？
-- RAG的完整流程是什么？如何优化检索质量？
-- 知识图谱在RAG中的作用？GraphRAG vs 纯向量检索？
-- 如何解决多Agent间的循环依赖和无限循环？
-- 多模态文档解析的技术挑战和解决方案？
-- 增量更新的CDC方案如何设计？
-- 向量数据库选型对比（Milvus vs PGVector vs ChromaDB）
-- LangGraph vs CrewAI vs AutoGen 框架对比
-
----
-
-## 五、实施计划（已完成）
-
-| Phase | 内容 | 状态 |
-|-------|------|------|
-| Phase 1 | 基础框架 + Python版4个Agent + LangGraph编排 + FastAPI + docker-compose | 完成 |
-| Phase 2 | 三大技术亮点：多模态RAG、知识图谱GraphRAG、CDC增量更新 | 完成 |
-| Phase 3 | Java版（Spring AI + Spring Boot）+ Go版（Gin + go-openai） | 完成 |
-| Phase 4 | 详细README + 架构文档 + 面试八股文 + STAR话术 + 简历模板 + 代码讲解 | 完成 |
-| Phase 5 | Git初始化 + .gitignore + GitHub Actions CI + 推送到GitHub | 完成 |
+- 有明确输入、输出和失败语义。
+- 有自动化测试或可重复的集成验证。
+- 配置、启动和限制写入 README。
+- 指标能追溯到数据集、环境和原始报告。
+- 不依赖未实现的 TODO 或隐含人工步骤。

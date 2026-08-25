@@ -1,248 +1,118 @@
-# 架构设计详解
+# AgentKnowledgeHub 架构说明
 
-> 本文档详细解释系统中每个架构决策的理由，面试中被问到"为什么这么设计"时使用。
+## 1. 定位
 
----
+AgentKnowledgeHub 是一个 Agentic RAG 工程原型。它把文档解析、结构化知识抽取、混合检索问答和增量维护拆成职责明确的组件，再由 LangGraph 编排状态、分支、暂停和恢复。
 
-## 1. 为什么用多Agent而不是单Agent？
+这里的“Agent”指带 LLM 决策或结构化输出的任务角色，不代表多个自治 Agent 通过消息协商。当前系统更准确的表述是：**四个领域 Agent + 三条有状态工作流**。
 
-### 单Agent的问题
+## 2. 运行时组件
 
-```
-用户请求 → [单一大Agent] → 响应
-              │
-              ├── 解析文档?
-              ├── 抽取知识?
-              ├── 检索回答?
-              └── 更新知识库?
-```
+| 层 | 组件 | 职责 |
+|---|---|---|
+| 接口 | FastAPI / Web UI / MCP | 上传、问答、审核、更新、统计、健康检查和工具互操作 |
+| 编排 | LangGraph | 入库、问答、更新工作流；checkpointer；HITL interrupt/resume |
+| Agent | Parser / Extract / QA / Update | 文档理解、结构化抽取、检索生成和一致性更新 |
+| 检索 | VectorStoreService / KnowledgeGraphService | Chroma/Qdrant/PGVector 语义检索和 Neo4j 图查询 |
+| 可选组件 | Reranker / Kafka / Watchdog / LangSmith | 精排、事件消费、文件监听和链路追踪 |
 
-当一个Agent要处理所有任务时:
-- **Prompt膨胀**: 系统提示词要覆盖所有场景，容易互相冲突
-- **工具过载**: 单Agent挂载太多工具，选择准确率下降
-- **难以调试**: 出了问题不知道哪个环节出错
+## 3. 三条核心链路
 
-### 多Agent的优势
+### 3.1 文档入库
 
-```
-用户请求 → [编排引擎] → 分发到专职Agent → 响应
-              │
-              ├── [文档解析Agent]  — 只关心"把文档读懂"
-              ├── [知识抽取Agent]  — 只关心"提取实体关系"
-              ├── [问答Agent]      — 只关心"回答用户问题"
-              └── [更新Agent]      — 只关心"保持知识最新"
+```text
+file
+  → classify / parse
+  → structure-aware chunk
+  → entity + relation + event extraction
+  → optional HITL review
+  ├→ vector upsert
+  └→ graph upsert with provenance
 ```
 
-**关键优势**:
-1. **职责单一**: 每个Agent的Prompt精简聚焦，准确率更高
-2. **独立迭代**: 改进一个Agent不影响其他Agent
-3. **并行执行**: 向量检索和图谱检索可以并行
-4. **故障隔离**: 一个Agent出错，其他Agent继续工作
+关键语义：
 
----
+- `DocumentChunk` 保存 `doc_id`、`chunk_id`、来源、页码、标题路径和内容类型。
+- LLM 抽取使用 Pydantic schema，减少自由文本 JSON 解析失败。
+- HITL 开启时，工作流在 `interrupt()` 处挂起；驳回后向量与图谱写入都返回 0。
+- 图谱实体和关系保存 `source::chunk_id` provenance，支持后续精确清理。
+- 两个存储分支并行，但当前没有跨数据库事务；生产环境需要 outbox、补偿任务或幂等作业状态。
 
-## 2. 编排引擎设计
+### 3.2 混合检索问答
 
-### 为什么选 LangGraph？
-
-LangGraph 将Agent工作流建模为**有向图**:
-- **节点 (Node)**: 每个处理步骤 (Agent调用/工具调用/决策)
-- **边 (Edge)**: 步骤间的连接和数据流
-- **条件边**: 根据状态动态选择下一步
-
-对比其他方案:
-
-| 方案 | 优点 | 缺点 |
-|------|------|------|
-| 直接编码 | 简单 | 难以维护，无法可视化 |
-| CrewAI | 上手快 | 控制粒度不够 |
-| **LangGraph** | 完全可控，可视化 | 学习曲线稍高 |
-
-### 三条流水线详解
-
-**流水线1: 文档入库**
-
-```
-[parse] → [extract] → [store_vectors]
-                    → [store_graph]
+```text
+question
+  → intent classification + query rewrite
+  ├→ vector searches for rewritten queries
+  └→ parameterized graph neighbor/path searches
+  → deduplicate + weighted merge
+  → optional cross-encoder rerank
+  → relevance check / bounded Self-RAG retry
+  → answer + sources + confidence
 ```
 
-- `parse` 和 `extract` 是**串行**的 (抽取依赖解析结果)
-- `store_vectors` 和 `store_graph` 是**并行**的 (互不依赖)
+向量与图检索通过 `asyncio.gather` 并发执行。图检索不再让 LLM 生成任意 Cypher，而是把抽取到的实体名传给参数化的邻居和最短路径查询。MCP 暴露的 Cypher 工具也经过单语句、只读关键字和允许起始子句校验。
 
-设计理由: 利用 LangGraph 的分支特性，向量化和图谱化同时进行，减少总耗时。
+当前混排权重是启发式规则，置信度也不是统计校准概率。若要进入真实业务，需要在标注集上调权并做 calibration。
 
-**流水线2: 问答**
+### 3.3 增量更新
 
-```
-[answer] → END
-```
-
-问答Agent内部已经实现了复杂的混合检索逻辑，所以外部编排保持简洁。如果未来需要加入"答案审核Agent"或"引用验证Agent"，只需要在图中加节点。
-
-**流水线3: 增量更新**
-
-```
-[process] → (成功?) → [done/END]
-                   → [retry] → END
+```text
+created / modified / deleted
+  → parse current document
+  → compare with previous snapshot
+  → identify stale and changed chunk IDs
+  → remove vector records and graph provenance
+  → extract/store changed chunks only
+  → save new snapshot
 ```
 
-条件路由: 如果有失败的更新任务，自动重试一次。这是生产环境必需的容错设计。
+快照记录 chunk ID 和内容。修改时以 `(chunk_id, content)` 判定不变项，防止内容重复导致错误去重；旧 chunk 会同时从向量库删除并从图事实的 provenance 中移除。实体或关系仍有其他来源时保留，没有来源时清理。
 
----
+Kafka consumer 和文件 watcher 已提供组件入口，但当前 FastAPI 生命周期不会自动启动它们；默认可通过管理 API 显式触发更新。
 
-## 3. GraphRAG 混合检索架构
+## 4. 文档解析与分块
 
-### 为什么不只用向量检索？
+解析器按格式选择轻量实现：
 
-**向量检索的局限性实验**:
+- PDF：可选 marker，随后 PyMuPDF，最后 pypdf。
+- DOCX/PPTX：可选 docling，随后 python-docx/python-pptx。
+- 图片：OCR，必要时尝试多模态 LLM 描述。
+- Markdown/表格/文本：保留标题、表格、页码等结构元数据。
 
-| 问题类型 | 纯向量检索准确率 | GraphRAG准确率 |
-|----------|-----------------|----------------|
-| 事实型 (谁/什么) | 82% | 91% |
-| 关系型 (A和B的关系) | 58% | 89% |
-| 多跳推理 | 35% | 78% |
-| 对比型 | 71% | 85% |
+语义分块计算相邻句 embedding 的余弦距离，以配置的百分位阈值寻找主题边界，再施加 `chunk_size` 硬上限。没有 embedding 或调用失败时退化为结构分块。同步解析、embedding 后端和本地向量库操作被放入 worker thread，避免阻塞 FastAPI 事件循环。
 
-结论: **关系型和多跳推理问题**，向量检索几乎无法回答，必须引入知识图谱。
+## 5. 数据与安全边界
 
-### 检索融合策略
+- 上传文件名只用于展示，磁盘名使用 UUID；文件必须属于允许扩展名并受大小限制。
+- 管理更新只能访问 `upload_dir` 内的解析后绝对路径。
+- 配置 `API_KEY` 后，上传、审核和更新接口要求 `X-API-Key`。
+- LLM 关系类型必须进入固定 allowlist，其他值降级为 `RELATED_TO`。
+- Web UI 对文件名、问题、回答和元信息使用文本节点或 HTML 转义。
+- 容器使用非 root 用户，并区分 liveness 与 dependency readiness。
 
-```
-        Query
-         │
-    ┌────┴────┐
-    │         │
- 向量检索  实体链接
-    │         │
-    │     ┌───┴───┐
-    │     │       │
-    │  子图遍历  路径检索
-    │     │       │
-    │     └───┬───┘
-    │         │
-    │    社区摘要
-    │         │
-    └────┬────┘
-         │
-   交叉重排序
-         │
-      Top-K
-```
+这些措施不等价于完整生产安全。当前仍缺少用户身份、RBAC、租户隔离、配额、审计日志、恶意文件扫描和查询成本控制。
 
-**权重设计理由**:
-- 路径检索 ×1.25 — 推理路径是最有价值的信息，直接给出推理链
-- 子图遍历 ×1.15 — 结构化关系比语义相似更精准
-- 社区摘要 ×1.1  — 提供高层概览，补充细节不足
-- 向量检索 ×1.0  — 基线，语义匹配的通用能力
+## 6. 关键设计取舍
 
----
+### 为什么同时使用向量库和图数据库？
 
-## 4. CDC 增量更新设计
+向量检索适合语义近似和原文证据，图查询适合显式关系和路径。两者并行可以降低串行延迟，但也引入双写一致性和排序校准问题。本项目用 provenance 与幂等 upsert 解决基本删除一致性，尚未实现跨库事务。
 
-### 为什么不用全量更新？
+### 为什么不接受 LLM 生成的任意 Cypher？
 
-| 方案 | 1000文档更新5个 | 优点 | 缺点 |
-|------|----------------|------|------|
-| 全量 | ~30分钟 | 简单 | 慢，浪费资源 |
-| **CDC增量** | ~30秒 | 快，省资源 | 实现复杂 |
+即使做关键字过滤，生成式查询仍可能产生高成本或越权语句。主问答链路因此只调用预定义模板，并把用户内容作为参数。只读 Cypher 入口保留给受控 MCP 场景，但部署时仍应叠加数据库只读账号和超时限制。
 
-### 事件驱动架构
+### 为什么重型 ML 是可选依赖？
 
-```
-文件系统变更 → Watchdog → CDCEvent → 处理器 → 增量更新
-                                        ↓
-数据库变更 → Debezium → Kafka → CDCEvent → 处理器 → 增量更新
-```
+marker、docling、sentence-transformers 会显著增加镜像、下载和原生依赖复杂度。核心依赖可以使用 API embedding 和轻量解析器启动；完整依赖用于离线或资源充足环境。
 
-所有变更事件统一为 `CDCEvent` 格式:
-```python
-CDCEvent(
-    event_id="abc123",
-    source_type="filesystem",  # 或 "database"
-    operation="UPDATE",        # INSERT / UPDATE / DELETE
-    resource_path="/docs/report.pdf",
-    before={...},              # 变更前内容
-    after={...},               # 变更后内容
-)
-```
+## 7. 已知限制
 
-### 版本管理
+- 没有真实 Neo4j/Kafka 的 CI 端到端测试。
+- 默认 memory checkpointer 不支持多实例恢复。
+- 图实体以名称合并，复杂实体身份需要 tenant/domain scoped ID。
+- 评测集只有 5 份示例文档和 30 个问题，仅验证评测管线。
+- Java/Go 是对照原型，功能和测试覆盖不等同于 Python 主实现。
 
-每个实体节点都带版本号和时间戳:
-```cypher
-(entity:Entity {
-    name: "张三",
-    version: 3,
-    created_at: 1712000000,
-    updated_at: 1712300000
-})
-```
-
-好处:
-1. 可追溯: 知道实体是什么时候、被哪次更新修改的
-2. 可回滚: 如果更新出错，可以回退到上一个版本
-3. 可审计: 满足企业合规要求
-
----
-
-## 5. 多模态处理策略
-
-### 策略: "万物转文本"
-
-不同模态都先转为文本表示，再做统一嵌入:
-
-```
-PDF文字 ─────────────────→ 文本
-PDF图片 → LLM视觉描述 ──→ 文本
-PDF表格 → 结构化提取 ──→ 文本 ("列名:值" 格式)
-图片    → OCR + LLM ────→ 文本
-Excel   → 行列解析 ────→ 文本
-```
-
-为什么这样做？
-1. **统一嵌入空间**: 所有模态在同一个向量空间中，可以跨模态检索
-2. **简化架构**: 不需要多个嵌入模型
-3. **LLM友好**: 文本是LLM最擅长处理的格式
-
-检索时的加权:
-```python
-MODALITY_WEIGHTS = {
-    "text": 1.0,       # 文本最可靠
-    "markdown": 1.0,
-    "pdf": 0.95,       # PDF解析可能有少量噪音
-    "table": 0.9,      # 表格转文本可能丢失结构
-    "image": 0.85,     # 图片描述最不确定
-}
-```
-
----
-
-## 6. 数据流总览
-
-```
-                    ┌─────────────────────────────┐
-                    │         用户操作              │
-                    └──────┬──────────────┬────────┘
-                           │              │
-                    上传文档│         提问  │
-                           ▼              ▼
-                    ┌──────────┐   ┌──────────┐
-                    │ 入库流水线 │   │ 问答流水线 │
-                    └──────────┘   └──────────┘
-                           │              │
-              ┌────────────┤              │
-              │            │              │
-              ▼            ▼              │
-        ┌──────────┐ ┌──────────┐        │
-        │ 向量数据库 │ │ 知识图谱  │←───────┘
-        │ ChromaDB  │ │  Neo4j   │    (检索)
-        └──────────┘ └──────────┘
-              ▲            ▲
-              │            │
-              └────┬───────┘
-                   │
-            ┌──────────┐
-            │ 更新流水线 │ ← CDC事件 ← Kafka ← 文件系统/数据库变更
-            └──────────┘
-```
+下一步见 [project-plan.md](./project-plan.md)。

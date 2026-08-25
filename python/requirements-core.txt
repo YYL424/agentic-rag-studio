@@ -1,0 +1,41 @@
+# ── 核心框架 ──────────────────────────────────────────
+langgraph>=1.0.0
+langgraph-checkpoint>=2.0.0
+langchain-core>=1.0.0
+langchain-openai>=1.0.0
+langchain-community>=0.3.0
+fastapi>=0.139.0
+uvicorn>=0.49.0
+pydantic>=2.13.0
+pydantic-settings>=2.10.0
+httpx>=0.28.0
+python-dotenv>=1.1.0
+python-multipart>=0.0.20
+
+# ── 轻量文档解析 (无需下载模型) ──────────────────────
+pymupdf>=1.25.0            # PDF 文本 + 表格提取
+pypdf>=5.0.0               # PDF 纯文本最终降级
+python-docx>=1.1.0         # docx 降级解析
+python-pptx>=1.0.0         # pptx 降级解析
+openpyxl>=3.1.0            # Excel 解析
+pdf2image>=1.17.0          # PDF 视觉 fallback
+pytesseract>=0.3.13        # OCR fallback
+pillow>=12.0.0
+
+# ── 存储层 (Qdrant / ChromaDB / Neo4j) ────────────────
+qdrant-client>=1.9.0       # 向量库: 服务端模式 + 嵌入式本地模式
+chromadb>=1.0.0            # 向量库: 兼容保留 (支持本地持久化模式)
+neo4j>=6.0.0               # 知识图谱
+sqlalchemy>=2.0.41
+psycopg2-binary>=2.9.11
+pgvector>=0.3.0,<0.4
+
+# ── MCP (1.x 提供 FastMCP 高层 API, 2.x 已移除) ────────
+mcp>=1.0,<2.0
+
+# ── CDC / 文件监听 ────────────────────────────────────
+confluent-kafka>=2.15.0
+watchdog>=6.0.0
+
+# ── 可观测性 ──────────────────────────────────────────
+langsmith>=0.3.0

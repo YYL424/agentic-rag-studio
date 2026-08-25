@@ -17,8 +17,7 @@ const (
 
 // DocParserAgent 文档解析 Agent (Go版)
 //
-// 支持 PDF / 图片 / 表格 / 纯文本等格式。
-// Go 版侧重高并发文件处理，利用 goroutine 实现并行解析。
+// 当前原型只直接读取文本类文件；PDF/Office 等格式应接入 Python API。
 type DocParserAgent struct{}
 
 func NewDocParserAgent() *DocParserAgent {
@@ -30,12 +29,23 @@ func (a *DocParserAgent) Parse(filePath string) ([]model.DocumentChunk, error) {
 	docID := computeDocID(filePath)
 	docType := detectType(filePath)
 
-	rawText, err := extractText(filePath)
+	rawText, err := callPythonParserSidecar(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("extract text: %w", err)
 	}
 
 	return chunkText(rawText, docID, docType, filePath), nil
+}
+
+// callPythonParserSidecar 是后续 sidecar 集成点。
+// 在 HTTP 集成完成前，只接受可安全直接读取的文本格式，避免把二进制误当文本入库。
+func callPythonParserSidecar(filePath string) (string, error) {
+	switch strings.ToLower(filepath.Ext(filePath)) {
+	case ".txt", ".md", ".csv", ".json", ".yaml", ".yml":
+		return extractText(filePath)
+	default:
+		return "", fmt.Errorf("%s requires the Python parser API, which is not wired in this prototype", filepath.Ext(filePath))
+	}
 }
 
 // ParseBatch 批量解析（利用 goroutine 并行）
@@ -115,10 +125,10 @@ func chunkText(text, docID, docType, source string) []model.DocumentChunk {
 			})
 			idx++
 		}
-		start = end - chunkOverlap
-		if start < 0 {
-			start = 0
+		if end == len(runes) {
+			break
 		}
+		start = end - chunkOverlap
 	}
 	return chunks
 }

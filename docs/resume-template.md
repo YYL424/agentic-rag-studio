@@ -1,114 +1,51 @@
-# 简历写法模板
+# 简历项目模板
 
-> 怎么把「多Agent知识管理系统」写到简历上，让面试官眼前一亮。
+## 推荐项目名称
 
----
+**AgentKnowledgeHub｜Agentic RAG 企业知识库（个人项目）**
 
-## 简历项目经历模板
+技术栈：Python、LangGraph、FastAPI、Neo4j、Qdrant/Chroma、Kafka、MCP、Docker、pytest
 
-### 模板1: AI工程师 / 算法工程师 (Python方向)
+## 无指标版本（现在即可使用）
 
-```
-项目名称：企业级多Agent知识管理系统 (AgentKnowledgeHub)
-时间：2026.01 - 2026.03
-角色：核心开发 (独立设计架构 + 全栈开发)
-技术栈：Python / LangGraph / LangChain / Neo4j / ChromaDB / FastAPI / Docker / Kafka
+- 设计并实现三条 LangGraph 有状态工作流，覆盖多格式文档入库、向量/知识图谱混合检索问答与 chunk 级增量更新，支持 checkpointer、HITL interrupt/resume 和失败重试。
+- 将向量检索与参数化 Neo4j 邻居/最短路径查询并发执行，引入可选 cross-encoder reranker 与有限轮次 Self-RAG，并返回来源、检索类型和推理步骤。
+- 为图实体和关系设计 `source::chunk_id` provenance，文档变更时联动清理向量记录和失效图事实，保留仍被其他文档引用的知识。
+- 完善工程安全与交付：限制上传类型/大小/路径、可选写接口 API Key、关系类型 allowlist、只读 Cypher 校验、非 root Docker、健康检查及 GitHub Actions。
+- 建立 fake LLM/embedding 的自动化测试与覆盖率门槛，并实现带来源约束、warm-up、运行环境和 SHA-256 的 Recall@K/MRR/NDCG 评测工具。
 
-项目描述：
-设计并开发了一个4-Agent混合编排的企业知识管理系统，支持多模态文档解析、
-知识图谱构建、GraphRAG智能问答和CDC增量更新的知识全生命周期管理。
+建议从上面选择 3–4 条，不要全部堆入一段经历。
 
-核心工作：
-• 设计4-Agent有向图编排架构(LangGraph)，实现文档入库、智能问答、增量
-  更新三条编排流水线，支持条件路由和自动重试
-• 实现多模态RAG管道，集成LLM视觉能力处理PDF/图片/表格等10+种文档格式，
-  不同模态分别向量化后加权融合检索
-• 基于Neo4j构建企业知识图谱，实现GraphRAG混合检索(向量+子图遍历+路径
-  推理)，相比纯向量检索F1提升22%
-• 设计CDC驱动的增量更新机制(Watchdog+Kafka)，实现文档变更的分钟级同步，
-  更新效率提升95%
-• 整体检索准确率从78%提升至94%，系统支持千级文档规模的实时问答
-```
+## 有真实指标后的版本
 
-### 模板2: Java后端开发
+只有完成公开可复现评测后，才使用下面句式：
 
-```
-项目名称：企业级多Agent知识管理系统
-时间：2026.01 - 2026.03
-角色：后端开发
-技术栈：Java 21 / Spring Boot 3.4 / Spring AI / LangChain4j / Neo4j / Milvus / Spring Kafka
+- 在 **[文档数/总页数]**、**[人工问题数]** 的固定评测集上，相比 **[明确 baseline]**，Recall@5 从 **[A]** 提升到 **[B]**，MRR 从 **[C]** 提升到 **[D]**；报告记录模型、配置、数据哈希与 **[重复次数]** 次运行方差。
+- 在 **[硬件/并发数]** 下，将检索 P95 从 **[A ms]** 降至 **[B ms]**，主要通过向量/图查询并发、同步 SDK 线程卸载和 warm cache；使用 **[工具]** 进行 **[持续时间]** 压测。
+- 对 **[修改比例]** 的文档更新，只重处理 **[chunk 数]**，写入量较全量重建下降 **[X%]**；通过故障注入验证 stale vector 与 graph provenance 均被清理。
 
-项目描述：
-基于Spring生态开发的多Agent知识管理系统，实现了文档解析、知识抽取、
-智能问答和增量更新四个AI Agent的协作编排。
+方括号必须替换为真实结果，并保留 benchmark JSON 或 CI artifact。不要使用仓库旧文档中的示例数字。
 
-核心工作：
-• 基于Spring AI和LangChain4j实现4个AI Agent，使用Apache Tika解析
-  PDF/Word/Excel等多格式文档
-• 设计Agent编排服务，通过状态机模式实现文档入库和问答两条流水线的
-  自动化编排，支持异常重试和降级处理
-• 集成Neo4j Java Driver实现知识图谱CRUD，支持实体版本管理和多跳
-  子图检索，查询性能优化到50ms以内
-• 使用Spring Kafka实现CDC事件消费(@KafkaListener)，文档变更实时
-  触发增量更新，避免全量重建的性能开销
-• 利用Java 21 Virtual Threads和Record特性，提升并发性能和代码可读性
-```
+## 面试自我介绍中的一句话
 
-### 模板3: Go后端开发
+> 这个项目最核心的不是接了多少模型，而是我把 RAG 的入库审核、双存储一致性、安全查询和可复现评测做成了能被测试的工程流程。
 
-```
-项目名称：企业级多Agent知识管理系统
-时间：2026.01 - 2026.03
-角色：后端开发
-技术栈：Go 1.22 / Gin / Neo4j Go Driver / pgvector / go-openai / Kafka-Go
+## 技术难点 STAR 模板
 
-项目描述：
-用Go语言实现的高性能多Agent知识管理系统，利用goroutine并发能力实现
-文档的高效批量处理和知识检索。
+**S：** 文档更新后，向量库可以按 chunk 删除，但图谱实体按名称合并，容易保留已经失效的关系。
 
-核心工作：
-• 设计并实现4个Agent的Go版本，利用goroutine实现文档批量解析的
-  真并行处理，解析吞吐量达到Python版的3倍
-• 使用Gin框架构建RESTful API，集成Neo4j Go Driver实现知识图谱
-  的CRUD操作和多跳检索
-• 实现内存向量存储(sync.RWMutex并发安全)，支持余弦相似度检索，
-  生产环境可无缝切换到pgvector
-• 整体编译为单一二进制文件，Docker镜像仅50MB，部署效率远超
-  Python/Java方案
-```
+**T：** 在不删除其他文档共享事实的前提下，让局部更新保持两种存储的一致性。
 
----
+**A：** 为实体和关系增加 `source::chunk_id` provenance；快照 diff 计算 stale chunk；删除时先移除来源，再只清理 provenance 为空的事实；用重复内容、修改和删除场景做回归测试。
 
-## 写简历的注意事项
+**R：** 系统能够区分共享事实与失效事实，修改时只重处理变化 chunk。若要量化写放大或耗时，需要补充真实规模实验。
 
-### DO (应该做的)
+## 简历发布前检查
 
-1. **量化结果**: "准确率提升22%"比"准确率显著提升"有力10倍
-2. **使用动作动词**: "设计"、"实现"、"优化"、"解决"
-3. **突出技术深度**: 不只说"用了LangGraph"，要说"用LangGraph实现有向图编排"
-4. **体现架构能力**: 说明你的设计决策和理由
-5. **与岗位匹配**: 投AI岗突出RAG/Agent，投后端岗突出系统设计
-
-### DON'T (不应该做的)
-
-1. **不要堆砌技术词**: 写自己真正理解的技术
-2. **不要夸大数据**: 面试官会追问，说不清楚就尴尬了
-3. **不要写团队成果**: 用"我"而不是"我们"
-4. **不要写太多细节**: 简历是概述，细节留给面试
-5. **不要把三种语言都写上**: 选岗位对应的语言版本
-
----
-
-## 技术关键词 (ATS 友好)
-
-确保简历中包含这些关键词，方便ATS系统筛选:
-
-```
-AI Agent / 多Agent系统 / LangGraph / LangChain
-RAG / 检索增强生成 / 向量数据库 / 知识图谱
-Neo4j / Cypher / GraphRAG / 多模态
-CDC / 增量更新 / Kafka / 事件驱动
-FastAPI / Spring AI / Spring Boot / Gin
-Docker / Docker Compose / 微服务
-Python / Java / Go
-```
+- [ ] GitHub Actions 已在远端变绿。
+- [ ] README 快速启动在干净环境复现成功。
+- [ ] 录屏中的命令和配置不包含密钥。
+- [ ] 至少有一份真实依赖端到端日志。
+- [ ] 所有性能数字都有数据集、baseline、环境和原始结果。
+- [ ] 明确 Python 是主实现，Java/Go 是原型。
+- [ ] 能解释一个失败案例、一个安全修复和一个架构取舍。
