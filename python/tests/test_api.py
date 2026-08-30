@@ -247,3 +247,6 @@ def test_root_html(client):
     assert "已入库\\n分块" in resp.text
     assert "已入库\n分块" not in resp.text
     assert "buf.indexOf('\\n\\n')" in resp.text
+    assert "⏳ 解析中" in resp.text
+    assert "原因: ' + detail" in resp.text
+    assert "e.target.value = ''" in resp.text

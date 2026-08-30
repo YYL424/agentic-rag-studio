@@ -172,17 +172,20 @@ class KnowledgeExtractAgent:
     async def _structured_extract(self, text: str) -> ExtractionOutput | None:
         """
         Pydantic 结构化输出 — 主路径 (供应商自适应):
-          1. function_calling: OpenAI 等主流供应商
-          2. json_mode: DeepSeek 等 (要求 prompt 含 "json" 字样)
+          1. DeepSeek 默认只走 json_mode，避免 thinking 模式不支持 tool_choice
+          2. 其他供应商先 function_calling，再降级到 json_mode
           全部失败 → 返回 None, 由 _json_extract 手动解析兜底
         """
-        for method, prompt_suffix in (
-            ("function_calling", None),
-            ("json_mode", "\n\nOutput a json object matching the schema."),
-        ):
+        for method in self._structured_output_methods():
             try:
                 structured = self.llm.with_structured_output(ExtractionOutput, method=method)
-                system = EXTRACTION_SYSTEM_PROMPT + (prompt_suffix or "")
+                system = EXTRACTION_SYSTEM_PROMPT
+                if method == "json_mode":
+                    schema_json = json.dumps(ExtractionOutput.model_json_schema(), ensure_ascii=False)
+                    system += (
+                        "\n\n请只返回一个符合以下 JSON Schema 的 json object，不要输出 Markdown、解释或思考过程：\n"
+                        f"{schema_json}"
+                    )
                 messages = [
                     SystemMessage(content=system),
                     HumanMessage(content=f"请从以下文本中抽取知识：\n\n{text}"),
@@ -191,6 +194,17 @@ class KnowledgeExtractAgent:
             except Exception as e:
                 logger.warning("structured output method=%s failed (%s)", method, str(e)[:120])
         return None
+
+    def _structured_output_methods(self) -> tuple[str, ...]:
+        """根据显式配置或供应商特征选择最短的结构化输出路径。"""
+        configured = settings.structured_output_method
+        if configured != "auto":
+            return (configured,)
+
+        provider_hint = f"{settings.openai_base_url} {settings.openai_model}".lower()
+        if "deepseek" in provider_hint:
+            return ("json_mode",)
+        return ("function_calling", "json_mode")
 
     async def _json_extract(self, text: str, source_id: str) -> ExtractionResult:
         """JSON 字符串解析 — 降级路径"""

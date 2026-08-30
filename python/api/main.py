@@ -498,6 +498,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .file-item .status.ok{background:#065f46;color:#6ee7b7}
 .file-item .status.err{background:#7f1d1d;color:#fca5a5}
 .file-item .status.pending{background:#78350f;color:#fbbf24}
+.upload-zone.busy{pointer-events:none;opacity:.65}
 .stats-bar{padding:16px;border-top:1px solid #334155;font-size:12px;color:#94a3b8}
 .stats-bar span{color:#818cf8;font-weight:600}
 .main{flex:1;display:flex;flex-direction:column}
@@ -579,12 +580,26 @@ document.getElementById('uploadZone').ondragleave = e => e.currentTarget.style.b
 document.getElementById('uploadZone').ondrop = e => {
   e.preventDefault();
   e.currentTarget.style.borderColor='#475569';
-  uploadFiles(e.dataTransfer.files);
+  void uploadFiles(Array.from(e.dataTransfer.files));
 };
-document.getElementById('fileInput').onchange = e => uploadFiles(e.target.files);
+document.getElementById('fileInput').onchange = e => {
+  const files = Array.from(e.target.files);
+  e.target.value = '';
+  void uploadFiles(files);
+};
 
 async function uploadFiles(files) {
+  if (!files.length) return;
+  const uploadZone = document.getElementById('uploadZone');
+  const fileInput = document.getElementById('fileInput');
+  uploadZone.classList.add('busy');
+  fileInput.disabled = true;
   for (const f of files) {
+    const item = { name: f.name, uploading: true, ok: false, pending: false };
+    uploadedFiles.push(item);
+    renderFiles();
+    const startedAt = Date.now();
+    addMsg('agent', '⏳ 正在解析并入库: ' + f.name + '\n大文档需要逐段抽取知识，请保持页面打开。');
     const form = new FormData();
     form.append('file', f);
     try {
@@ -593,32 +608,37 @@ async function uploadFiles(files) {
         headers: writeHeaders(),
         body: form
       });
-      const data = await res.json();
+      let data = {};
+      try { data = await res.json(); } catch(e) {}
+      const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
       if (res.ok) {
         const pending = data.status === 'review_required';
-        uploadedFiles.push({ name: data.file_name, chunks: data.chunks_count, ok: !pending, pending });
+        Object.assign(item, { name: data.file_name, chunks: data.chunks_count, uploading: false, ok: !pending, pending });
         if (pending) {
-          addMsg('agent', '📄 文档 ' + data.file_name + ' 已解析，等待人工审核（thread: ' + data.thread_id.slice(0,8) + '）\n分块: ' + data.chunks_count + ' | 实体: ' + data.entities_count + ' | 关系: ' + data.relations_count);
+          addMsg('agent', '📄 文档 ' + data.file_name + ' 已解析，等待人工审核（thread: ' + data.thread_id.slice(0,8) + '）\n分块: ' + data.chunks_count + ' | 实体: ' + data.entities_count + ' | 关系: ' + data.relations_count + ' | 用时: ' + elapsed + ' 秒');
         } else {
-          addMsg('agent', '📄 文档 ' + data.file_name + ' 已入库\n分块: ' + data.chunks_count + ' | 实体: ' + data.entities_count + ' | 关系: ' + data.relations_count);
+          addMsg('agent', '📄 文档 ' + data.file_name + ' 已入库\n分块: ' + data.chunks_count + ' | 实体: ' + data.entities_count + ' | 关系: ' + data.relations_count + ' | 用时: ' + elapsed + ' 秒');
         }
       } else {
-        uploadedFiles.push({ name: f.name, ok: false });
-        addMsg('agent', '❌ 上传失败: ' + f.name);
+        Object.assign(item, { uploading: false, ok: false });
+        const detail = typeof data.detail === 'string' ? data.detail : ('HTTP ' + res.status);
+        addMsg('agent', '❌ 上传失败: ' + f.name + '\n原因: ' + detail);
       }
     } catch(e) {
-      uploadedFiles.push({ name: f.name, ok: false });
-      addMsg('agent', '❌ 网络错误: ' + f.name);
+      Object.assign(item, { uploading: false, ok: false });
+      addMsg('agent', '❌ 网络错误: ' + f.name + '\n原因: ' + (e.message || '无法连接 API 服务'));
     }
+    renderFiles();
+    await loadStats();
   }
-  renderFiles();
-  loadStats();
+  uploadZone.classList.remove('busy');
+  fileInput.disabled = false;
 }
 
 function renderFiles() {
   const el = document.getElementById('fileList');
   if (!uploadedFiles.length) { el.innerHTML = '<div style="text-align:center;color:#475569;padding:20px">暂无文档</div>'; return; }
-  el.innerHTML = uploadedFiles.map(f => '<div class="file-item"><span class="name" title="'+escapeHtml(f.name)+'">'+escapeHtml(f.name)+'</span><span class="status '+(f.pending?'pending':(f.ok?'ok':'err'))+'">'+(f.pending?'⏳ 待审核':(f.ok?'✓ 已入库':'✗ 失败'))+'</span></div>').join('');
+  el.innerHTML = uploadedFiles.map(f => '<div class="file-item"><span class="name" title="'+escapeHtml(f.name)+'">'+escapeHtml(f.name)+'</span><span class="status '+((f.uploading||f.pending)?'pending':(f.ok?'ok':'err'))+'">'+(f.uploading?'⏳ 解析中':(f.pending?'⏳ 待审核':(f.ok?'✓ 已入库':'✗ 失败')))+'</span></div>').join('');
 }
 
 async function ask() {

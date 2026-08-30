@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import SystemMessage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -194,6 +195,40 @@ def test_parse_response_code_fence():
     raw = '```json\n{"entities": [], "relations": [], "events": []}\n```'
     result = KnowledgeExtractAgent()._parse_response(raw, "c1")
     assert result.entities == []
+
+
+@pytest.mark.asyncio
+async def test_deepseek_uses_json_mode_with_explicit_schema(monkeypatch):
+    """DeepSeek thinking 模式不应尝试 tool_choice，json_mode prompt 必须携带完整 Schema。"""
+    from agents.knowledge_extract_agent import ExtractionOutput
+    from config import settings
+
+    calls = []
+
+    class FakeStructuredLLM:
+        async def ainvoke(self, messages):
+            system = next(message for message in messages if isinstance(message, SystemMessage))
+            calls.append(system.content)
+            return ExtractionOutput()
+
+    class FakeLLM:
+        def with_structured_output(self, schema, method):
+            calls.append(method)
+            return FakeStructuredLLM()
+
+    monkeypatch.setattr(settings, "structured_output_method", "auto")
+    monkeypatch.setattr(settings, "openai_base_url", "https://api.deepseek.com")
+    monkeypatch.setattr(settings, "openai_model", "deepseek-reasoner")
+    agent = KnowledgeExtractAgent()
+    agent.llm = FakeLLM()
+
+    result = await agent._structured_extract("测试文本")
+
+    assert isinstance(result, ExtractionOutput)
+    assert calls[0] == "json_mode"
+    assert "JSON Schema" in calls[1]
+    assert '"entities"' in calls[1]
+    assert "function_calling" not in calls
 
 
 def test_deduplicate():
