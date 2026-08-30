@@ -119,6 +119,9 @@ curl -X POST http://localhost:8080/api/qa/ask \
   -d '{"question":"员工的年假规则是什么？"}'
 ```
 
+上传响应中的 `file_id` 是服务端生成的受管文件标识。后续增量更新或删除应把该值作为
+`/api/admin/update` 的 `file_path`；删除成功后服务会同步清理上传文件、向量和图谱来源数据。
+
 生产式部署应设置 `API_KEY`，并在上传、审核和更新请求中携带 `X-API-Key`。当前 Key 只保护写接口，读接口仍适合置于网关后。
 
 ## API 概览

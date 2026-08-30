@@ -111,6 +111,7 @@ class QuestionResponse(BaseModel):
 
 class IngestResponse(BaseModel):
     file_name: str
+    file_id: str
     chunks_count: int
     entities_count: int
     relations_count: int
@@ -216,6 +217,7 @@ async def upload_document(file: UploadFile = File(...)):
     if not ingest_wf:
         raise HTTPException(status_code=503, detail="Ingest workflow not initialized")
     save_path, original_name = await _save_upload(file)
+    file_id = Path(save_path).name
 
     thread_id = f"ingest-{uuid.uuid4().hex[:12]}"
     result = await ingest_wf.ainvoke(
@@ -234,6 +236,7 @@ async def upload_document(file: UploadFile = File(...)):
         pending = interrupts[0].value if interrupts else {}
         return IngestResponse(
             file_name=original_name,
+            file_id=file_id,
             chunks_count=len(chunks),
             entities_count=total_entities,
             relations_count=total_relations,
@@ -244,6 +247,7 @@ async def upload_document(file: UploadFile = File(...)):
 
     return IngestResponse(
         file_name=original_name,
+        file_id=file_id,
         chunks_count=len(chunks),
         entities_count=total_entities,
         relations_count=total_relations,
@@ -415,8 +419,9 @@ async def trigger_update(req: UpdateRequest):
     if not update_wf:
         raise HTTPException(status_code=503, detail="Update workflow not initialized")
 
+    managed_path = _resolve_managed_path(req.file_path)
     change = DocumentChange(
-        file_path=_resolve_managed_path(req.file_path),
+        file_path=managed_path,
         change_type=ChangeType(req.change_type),
     )
     result = await update_wf.ainvoke(
@@ -428,6 +433,8 @@ async def trigger_update(req: UpdateRequest):
         raise HTTPException(status_code=500, detail="Update failed")
 
     r = results[0]
+    if req.change_type == "deleted" and r.success:
+        Path(managed_path).unlink(missing_ok=True)
     return UpdateResponse(
         file_path=r.change.file_path,
         vectors_added=r.vectors_added,
@@ -613,7 +620,7 @@ async function uploadFiles(files) {
       const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
       if (res.ok) {
         const pending = data.status === 'review_required';
-        Object.assign(item, { name: data.file_name, chunks: data.chunks_count, uploading: false, ok: !pending, pending });
+        Object.assign(item, { name: data.file_name, fileId: data.file_id, chunks: data.chunks_count, uploading: false, ok: !pending, pending });
         if (pending) {
           addMsg('agent', '📄 文档 ' + data.file_name + ' 已解析，等待人工审核（thread: ' + data.thread_id.slice(0,8) + '）\n分块: ' + data.chunks_count + ' | 实体: ' + data.entities_count + ' | 关系: ' + data.relations_count + ' | 用时: ' + elapsed + ' 秒');
         } else {

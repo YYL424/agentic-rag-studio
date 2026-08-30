@@ -8,6 +8,7 @@ API 层测试 — SSE 流式输出 / HITL 审核端点 / 健康检查
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -186,6 +187,7 @@ def test_ingest_upload_requires_review_then_approve(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "review_required", f"HITL 模式应返回待审核: {data}"
+    assert re.fullmatch(r"[0-9a-f]{32}\.md", data["file_id"])
     assert data["thread_id"].startswith("ingest-")
     assert data["pending_review"], "应返回待审核的实体/关系摘要"
 
@@ -211,6 +213,38 @@ def test_ingest_review_reject(client):
     final = resp2.json()
     assert final["status"] == "rejected"
     assert final["entities_stored"] == 0
+
+
+def test_admin_delete_removes_managed_upload(client, tmp_path, monkeypatch):
+    """删除更新成功后应清理上传文件，且仅允许 upload_dir 内路径。"""
+    from types import SimpleNamespace
+
+    c, api_mod = client
+    monkeypatch.setattr(api_mod.settings, "upload_dir", str(tmp_path))
+    managed_file = tmp_path / "managed.md"
+    managed_file.write_text("test", encoding="utf-8")
+
+    class FakeUpdateWorkflow:
+        async def ainvoke(self, state, config):
+            change = state["changes"][0]
+            return {"results": [SimpleNamespace(
+                change=change,
+                vectors_added=0,
+                vectors_deleted=2,
+                entities_added=0,
+                relations_added=0,
+                chunks_reprocessed=0,
+                chunks_unchanged=0,
+                success=True,
+                processing_time_ms=1.0,
+            )]}
+
+    api_mod.workflows["update"] = FakeUpdateWorkflow()
+    resp = c.post("/api/admin/update", json={"file_path": "managed.md", "change_type": "deleted"})
+
+    assert resp.status_code == 200
+    assert resp.json()["vectors_deleted"] == 2
+    assert not managed_file.exists()
 
 
 # ── 健康检查 ─────────────────────────────────────────────────
