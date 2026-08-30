@@ -17,8 +17,8 @@ RUN pip install --no-cache-dir -r "${REQUIREMENTS_FILE}"
 COPY . .
 
 RUN useradd --create-home --uid 10001 agenthub && \
-    mkdir -p /app/uploads /app/data && \
-    chown -R agenthub:agenthub /app
+    mkdir -p /app/uploads /app/data /home/agenthub/.cache && \
+    chown -R agenthub:agenthub /app /home/agenthub/.cache
 
 USER agenthub
 

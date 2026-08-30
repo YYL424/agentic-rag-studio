@@ -110,12 +110,22 @@ class VectorStoreService:
         from qdrant_client.models import Distance, VectorParams
 
         existing = (await asyncio.to_thread(self._store.get_collections)).collections
-        if any(c.name == self.COLLECTION_NAME for c in existing):
-            return
-
         # 探测 embedding 维度
         dim = len(await self.embeddings.aembed_query("dimension probe"))
         self._qdrant_dim = dim
+
+        if any(c.name == self.COLLECTION_NAME for c in existing):
+            info = await asyncio.to_thread(self._store.get_collection, self.COLLECTION_NAME)
+            vector_config = info.config.params.vectors
+            existing_dim = getattr(vector_config, "size", None)
+            if existing_dim is not None and existing_dim != dim:
+                raise RuntimeError(
+                    f"Qdrant collection {self.COLLECTION_NAME!r} 维度不兼容: "
+                    f"已有 {existing_dim} 维，当前 embedding 输出 {dim} 维。"
+                    "请恢复原 embedding，或备份后重建该 collection。"
+                )
+            return
+
         await asyncio.to_thread(
             self._store.create_collection,
             collection_name=self.COLLECTION_NAME,

@@ -27,7 +27,8 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD", "bash", "-c", "curl -sf http://localhost:6333/healthz || exit 1"]
+      # 官方镜像不包含 curl；使用 Bash /dev/tcp 检查 REST 端口是否已监听。
+      test: ["CMD", "bash", "-c", ": > /dev/tcp/127.0.0.1/6333"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -90,6 +91,19 @@ services:
       retries: 10
       start_period: 20s
 
+  # ── 持久化目录权限初始化 (一次性、无网络) ─────────────
+  volume-init:
+    image: busybox:1.37
+    container_name: agenthub-volume-init
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 10001:10001 /uploads /model-cache"]
+    network_mode: "none"
+    read_only: true
+    volumes:
+      - uploads:/uploads
+      - model_cache:/model-cache
+    restart: "no"
+
   # ── Python API 服务 ───────────────────────────
   api:
     build:
@@ -103,16 +117,20 @@ services:
         required: false
     environment:
       NEO4J_URI: bolt://neo4j:7687
+      VECTOR_STORE_TYPE: qdrant
       QDRANT_URL: http://qdrant:6333
       REDIS_URL: redis://redis:6379
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     depends_on:
+      volume-init:
+        condition: service_completed_successfully
       neo4j:
         condition: service_healthy
       qdrant:
         condition: service_healthy
     volumes:
       - uploads:/app/uploads
+      - model_cache:/home/agenthub/.cache
     restart: unless-stopped
 
 volumes:
@@ -120,3 +138,4 @@ volumes:
   qdrant_data:
   chroma_data:
   uploads:
+  model_cache:

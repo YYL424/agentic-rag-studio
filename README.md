@@ -75,19 +75,19 @@ pip install -r requirements-core.txt
 cp .env.example .env
 ```
 
-核心依赖不包含本地 embedding/reranker 模型，因此轻量启动建议在 `.env` 中设置：
+轻量启动建议在 `.env` 中设置：
 
 ```dotenv
 OPENAI_API_KEY=your-key
 OPENAI_MODEL=gpt-4o-mini
-EMBEDDING_BACKEND=api
+EMBEDDING_BACKEND=local
 MARKER_ENABLED=false
 ENABLE_RERANKER=false
 VECTOR_STORE_TYPE=qdrant
 QDRANT_URL=http://localhost:6333
 ```
 
-如需本地 BGE embedding、reranker、marker 和 docling：
+`local` 模式在核心依赖中使用 Chroma 的 ONNX MiniLM 回退，首次运行会下载一次模型；Docker Compose 会将模型保存在 `model_cache` volume 中。它适合快速演示。如果接口支持 `/embeddings`，也可以设置 `EMBEDDING_BACKEND=api`；如需中文 BGE embedding、reranker、marker 和 docling：
 
 ```bash
 pip install -r requirements.txt

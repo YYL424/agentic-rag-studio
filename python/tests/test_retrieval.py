@@ -169,6 +169,32 @@ async def test_qdrant_get_stats_before_init(tmp_path, monkeypatch):
     assert stats["status"] == "not_initialized"
 
 
+@pytest.mark.asyncio
+async def test_qdrant_rejects_embedding_dimension_mismatch(tmp_path, monkeypatch):
+    """切换 embedding 模型时不应把不同维度的向量写进已有 collection。"""
+    from config import settings
+    from services.vector_store import VectorStoreService
+
+    qdrant_path = str(tmp_path / "qdrant-dimension")
+    monkeypatch.setattr(settings, "vector_store_type", "qdrant")
+    monkeypatch.setattr(settings, "qdrant_url", "")
+    monkeypatch.setattr(settings, "qdrant_path", qdrant_path)
+
+    original = VectorStoreService(embeddings=FakeEmbeddings())
+    await original.init()
+    await original.close()
+
+    class ThreeDimEmbeddings(FakeEmbeddings):
+        @staticmethod
+        def _vec(_text: str) -> list[float]:
+            return [0.1, 0.2, 0.3]
+
+    incompatible = VectorStoreService(embeddings=ThreeDimEmbeddings())
+    with pytest.raises(RuntimeError, match="维度不兼容"):
+        await incompatible.init()
+    await incompatible.close()
+
+
 # ── Reranker ─────────────────────────────────────────────────
 
 def test_reranker_unavailable_falls_back_gracefully(monkeypatch):

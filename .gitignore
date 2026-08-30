@@ -68,6 +68,7 @@ secrets.yaml
 
 # ── Test / benchmark artifacts ────────────────
 .pytest_cache/
+.pytest-tmp/
 .coverage
 coverage.xml
 htmlcov/

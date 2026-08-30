@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o"
 
-    # ── Embedding: "api" (OpenAI-compatible) | "local" (sentence-transformers) ──
-    embedding_backend: Literal["api", "local"] = "api"
+    # ── Embedding: "api" (OpenAI-compatible) | "local" (BGE / ONNX fallback) ──
+    embedding_backend: Literal["api", "local"] = "local"
     embedding_model: str = "text-embedding-3-small"
     local_embedding_model: str = "BAAI/bge-small-zh-v1.5"
 
