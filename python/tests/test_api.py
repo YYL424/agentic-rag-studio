@@ -242,3 +242,8 @@ def test_root_html(client):
     resp = c.get("/")
     assert resp.status_code == 200
     assert "AgentKnowledgeHub" in resp.text
+    assert '<label class="upload-zone" id="uploadZone" for="fileInput">' in resp.text
+    # CHAT_HTML 必须保留 JS 转义；Python 若把 \n 展开为真实换行，会让整段脚本语法错误。
+    assert "已入库\\n分块" in resp.text
+    assert "已入库\n分块" not in resp.text
+    assert "buf.indexOf('\\n\\n')" in resp.text

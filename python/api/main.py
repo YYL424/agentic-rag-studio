@@ -471,7 +471,7 @@ async def chat_ui():
     return CHAT_HTML
 
 
-CHAT_HTML = """<!DOCTYPE html>
+CHAT_HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -486,7 +486,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .sidebar-header p{font-size:12px;color:#94a3b8}
 .api-key{margin:12px 16px 0;padding:9px 11px;width:calc(100% - 32px);background:#0f172a;border:1px solid #475569;border-radius:8px;color:#e2e8f0;outline:none}
 .api-key:focus{border-color:#818cf8}
-.upload-zone{margin:16px;padding:24px;border:2px dashed #475569;border-radius:12px;text-align:center;cursor:pointer;transition:all .2s;flex-shrink:0}
+.upload-zone{display:block;margin:16px;padding:24px;border:2px dashed #475569;border-radius:12px;text-align:center;cursor:pointer;transition:all .2s;flex-shrink:0}
 .upload-zone:hover{border-color:#818cf8;background:#1e1b4b}
 .upload-zone input{display:none}
 .upload-zone .icon{font-size:32px;margin-bottom:8px}
@@ -532,11 +532,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <p>Agentic RAG 知识库 v2.0</p>
   </div>
   <input class="api-key" type="password" id="apiKeyInput" placeholder="写接口 API Key（可选）" autocomplete="off">
-  <div class="upload-zone" id="uploadZone">
+  <label class="upload-zone" id="uploadZone" for="fileInput">
     <div class="icon">📁</div>
     <div class="text">点击或拖拽上传文档<br>支持 PDF / Word / PPT / Excel / 图片 / TXT</div>
     <input type="file" id="fileInput" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg">
-  </div>
+  </label>
   <div class="file-list" id="fileList">
     <div style="text-align:center;color:#475569;padding:20px">暂无文档</div>
   </div>
@@ -574,7 +574,6 @@ function escapeHtml(value) {
   })[ch]);
 }
 
-document.getElementById('uploadZone').onclick = () => document.getElementById('fileInput').click();
 document.getElementById('uploadZone').ondragover = e => { e.preventDefault(); e.currentTarget.style.borderColor='#818cf8'; };
 document.getElementById('uploadZone').ondragleave = e => e.currentTarget.style.borderColor='#475569';
 document.getElementById('uploadZone').ondrop = e => {
@@ -658,7 +657,7 @@ async function ask() {
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       let idx;
-      while ((idx = buf.indexOf('\\n\\n')) >= 0) {
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
         const line = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 2);
         if (!line.startsWith('data: ')) continue;
