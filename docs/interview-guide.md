@@ -2,9 +2,9 @@
 
 ## 90 秒项目介绍
 
-> 我做了一个面向企业文档的 Agentic RAG 知识库。Python 主实现用 LangGraph 编排三条工作流：文档解析和知识入库、向量与图谱并行检索问答、以及基于 chunk diff 的增量更新。系统支持 Chroma/Qdrant/PGVector 和 Neo4j，知识抽取使用结构化输出，关键写入可通过 HITL 审核。工程上我重点解决了双存储一致性和安全边界：每条图事实记录来源 chunk，文档变化时同时删除旧向量和旧 provenance；主问答链路只使用参数化图查询，上传路径、大小和写接口也有限制。项目有自动化测试、覆盖率门槛、CI 和带数据哈希的检索评测。当前它是工程原型，真实数据库端到端、租户权限和业务规模评测仍是下一阶段。
+> 我做了一个面向企业文档的 Agentic RAG 知识库。Python 主实现用 LangGraph 编排三条工作流：文档解析和知识入库、向量与图谱并行检索问答、以及基于 chunk diff 的增量更新。系统支持 Chroma/Qdrant/PGVector 和 Neo4j，知识抽取通过 provider-aware 适配器获得结构化输出，关键写入可通过 HITL 审核。工程上我重点解决了双存储一致性、上传幂等和安全边界：每条图事实记录来源 chunk，相同文件通过内容哈希去重，文档变化或删除时同时清理旧向量和旧 provenance；主问答链路只使用参数化图查询。项目有覆盖率门槛、CI、真实 Qdrant/Neo4j roundtrip 和带数据哈希的检索评测。当前它仍是工程原型，多实例作业、租户权限和业务规模评测是下一阶段。
 
-## 面试官最可能追问的 10 个问题
+## 面试官最可能追问的 12 个问题
 
 ### 1. 这是真正的多 Agent 吗？
 
@@ -46,12 +46,22 @@ Chroma/Qdrant 客户端以及部分解析器是同步的。服务层使用 `asyn
 
 核心 Python 代码本身可以在更新版本解释器上运行，但 marker、sentence-transformers、pyarrow 等可选依赖包含原生扩展。在 Python 3.14 环境观察到兼容性异常，所以项目主动声明经过目标依赖生态支持的版本范围，而不是掩盖风险。
 
+### 11. 重复上传和失败重试怎么处理？
+
+API 在流式保存文件时计算 SHA-256，并在上传 volume 内的 SQLite 目录用唯一索引登记内容哈希。并发或重复上传返回已有 `file_id`，不会再次抽取和双写；状态为 failed/rejected 或文件被手动移除时允许重试。这个方案适合单实例演示，多实例应迁移到共享数据库并使用 job lease。
+
+### 12. 为什么结构化输出还需要一层适配器？
+
+OpenAI-compatible 并不代表所有 provider 都完整支持 function calling。适配器集中注入 Pydantic JSON schema、设置超时并记录失败；默认 OpenAI 类 provider 先走 function calling 再降级 JSON mode，DeepSeek 类接口直接走 JSON mode。Agent 不再各自维护一套脆弱的解析逻辑。
+
 ## 可以展示的代码路径
 
 - 工作流和 HITL：`python/orchestrator/graph.py`
 - 并发混合检索：`python/agents/qa_agent.py`
 - 增量一致性：`python/agents/knowledge_update_agent.py`
 - provenance 与安全图查询：`python/services/knowledge_graph.py`
+- 结构化模型适配：`python/services/structured_llm.py`
+- 文档幂等与状态：`python/services/document_registry.py`
 - 上传和健康检查：`python/api/main.py`
 - 评测可追溯性：`python/benchmarks/`
 - 回归测试：`python/tests/`
@@ -68,7 +78,8 @@ Chroma/Qdrant 客户端以及部分解析器是同步的。服务层使用 `asyn
 
 1. 打开 `/docs` 和 `/api/health/ready`。
 2. 上传示例文档，展示 chunk 和结构化抽取。
-3. 开启 HITL，演示一次驳回不写入、一次通过。
-4. 提问并展示向量/图来源和 SSE。
-5. 修改文档，触发更新，展示 unchanged/reprocessed 计数。
-6. 最后展示测试和 benchmark 报告，而不是只展示聊天页面。
+3. 刷新页面展示文档仍存在，再重复上传一次展示内容去重。
+4. 开启 HITL，在网页中演示一次驳回不写入、一次通过。
+5. 提问并展示向量/图来源和 SSE。
+6. 删除文档并展示向量/图谱计数回落。
+7. 最后展示真实存储 CI 和 benchmark 报告，而不是只展示聊天页面。

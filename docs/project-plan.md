@@ -10,8 +10,11 @@
 - HITL 审核及驳回写入门禁。
 - chunk 级增量更新和跨向量/图谱 provenance 清理。
 - FastAPI、SSE、Web UI、MCP、健康检查。
+- 上传卷内持久文档目录、SHA-256 去重、失败重试和网页审核/删除闭环。
+- provider-aware 结构化输出适配器，统一 schema、超时和降级策略。
 - 上传隔离、可选 API Key、关系 allowlist、只读 Cypher。
 - pytest、覆盖率门槛、Ruff、Python 3.11–3.13 CI。
+- 真实 Qdrant/Neo4j 写入、查询、删除集成测试和本地 API smoke 脚本。
 - 30 题示例 golden set 和可追溯评测元数据。
 
 ## P0：作品集发布前
@@ -21,16 +24,16 @@
 | 修复关键一致性与安全问题 | HITL、增量 provenance、上传与 Cypher 均有回归测试 | 已完成 |
 | 建立 CI | 3 个 Python 版本运行静态检查和覆盖率门槛 | 已完成，待远端首次运行 |
 | 清理项目表述 | README、简历和面试文档不含无来源指标 | 已完成 |
-| 真实依赖 smoke test | Neo4j + Qdrant 容器完成上传、问答、修改、删除闭环 | 待完成 |
+| 真实依赖 smoke test | 自动化存储 roundtrip + 可重复 API 上传/问答/删除脚本 | 已完成，本地真实模型与双存储均已通过 |
 | 演示资产 | 录制 2–3 分钟 GIF/视频，展示来源与更新计数 | 待完成 |
 
 ## P1：提高简历含金量
 
 1. **真实评测集**：至少 200 个由人工审核的问题，覆盖事实、比较、关系、多跳、无答案五类；固定模型和随机性，重复运行并给置信区间。
-2. **端到端 CI**：用 service containers 启动 Neo4j/Qdrant，验证 schema、索引、upsert、删除和 readiness。
-3. **异步作业模型**：上传后返回 job ID，后台处理，提供状态、重试、取消和失败原因，避免长文档占用 HTTP 请求。
-4. **一致性补偿**：ingestion job + outbox + 幂等键；模拟单库故障并验证重放。
-5. **可观测性**：记录节点延迟、token、召回数、Self-RAG 轮次和错误率；提供一张 Grafana 或 LangSmith trace 截图。
+2. **异步作业模型**：上传后返回 job ID，后台处理，提供状态、重试、取消和失败原因，避免长文档占用 HTTP 请求。
+3. **一致性补偿**：ingestion job + outbox + 幂等键；模拟单库故障并验证重放。
+4. **可观测性**：记录节点延迟、token、召回数、Self-RAG 轮次和错误率；提供一张 Grafana 或 LangSmith trace 截图。
+5. **故障注入 CI**：在真实 service containers 中模拟一个存储分支失败，验证幂等重放和清理。
 
 ## P2：生产化能力
 
@@ -45,9 +48,9 @@
 
 如果目标是尽快用于求职，优先顺序建议是：
 
-1. 完成一次真实 Docker 端到端 smoke test，并保留命令和日志。
-2. 扩充人工 golden set，生成一份可公开复现的 benchmark 报告。
-3. 录制短演示并在 README 中展示，同时附架构图和失败场景。
+1. 扩充人工 golden set，生成一份可公开复现的 benchmark 报告。
+2. 录制短演示并在 README 中展示，同时附架构图和失败场景。
+3. 把请求内入库升级为持久后台作业，并加入故障补偿证据。
 
 这三项比继续增加新框架或再做一种语言实现更能证明工程能力。
 
