@@ -219,8 +219,14 @@ async def test_deepseek_uses_json_mode_with_explicit_schema(monkeypatch):
     monkeypatch.setattr(settings, "structured_output_method", "auto")
     monkeypatch.setattr(settings, "openai_base_url", "https://api.deepseek.com")
     monkeypatch.setattr(settings, "openai_model", "deepseek-reasoner")
+    from services.structured_llm import StructuredLLMAdapter
+
     agent = KnowledgeExtractAgent()
     agent.llm = FakeLLM()
+    agent.structured_llm = StructuredLLMAdapter(
+        agent.llm,
+        provider_hint="https://api.deepseek.com deepseek-reasoner",
+    )
 
     result = await agent._structured_extract("测试文本")
 

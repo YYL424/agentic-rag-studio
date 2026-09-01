@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from services.reranker import RerankerService
+from services.structured_llm import StructuredLLMAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -137,10 +138,8 @@ class QAAgent:
             reranker = RerankerService()
         self.reranker = reranker
 
-        # 结构化输出 (with_structured_output), 失败时降级到字符串解析
-        self._intent_llm = self.llm.with_structured_output(IntentOutput)
-        self._rewrite_llm = self.llm.with_structured_output(QueryRewriteOutput)
-        self._relevance_llm = self.llm.with_structured_output(RelevanceScore)
+        # 统一供应商适配；DeepSeek 避免不兼容的 tool_choice，失败时由各节点降级。
+        self.structured_llm = StructuredLLMAdapter(self.llm)
 
     # ── public API ───────────────────────────────────────────
 
@@ -235,7 +234,7 @@ class QAAgent:
             HumanMessage(content=question),
         ]
         try:
-            output = await self._intent_llm.ainvoke(messages)
+            output = await self.structured_llm.invoke(IntentOutput, messages, purpose="intent_classification")
             return QueryIntent(output.intent)
         except Exception:
             pass
@@ -255,7 +254,7 @@ class QAAgent:
             HumanMessage(content=question),
         ]
         try:
-            output = await self._rewrite_llm.ainvoke(messages)
+            output = await self.structured_llm.invoke(QueryRewriteOutput, messages, purpose="query_rewrite")
             return {"queries": output.queries, "entities": output.entities, "keywords": output.keywords}
         except Exception:
             pass
@@ -283,7 +282,7 @@ class QAAgent:
             HumanMessage(content=f"问题: {question}\n\n已有检索结果(不充分):\n{context_preview}"),
         ]
         try:
-            output = await self._rewrite_llm.ainvoke(messages)
+            output = await self.structured_llm.invoke(QueryRewriteOutput, messages, purpose="self_rag_rewrite")
             return {"queries": output.queries, "entities": output.entities, "keywords": output.keywords}
         except Exception:
             return await self._rewrite_query_fallback(question)
@@ -296,7 +295,7 @@ class QAAgent:
             HumanMessage(content=f"问题: {question}\n\n检索结果:\n{context_text}"),
         ]
         try:
-            return await self._relevance_llm.ainvoke(messages)
+            return await self.structured_llm.invoke(RelevanceScore, messages, purpose="relevance_evaluation")
         except Exception as e:
             logger.warning("relevance evaluation failed: %s", e)
             return None
