@@ -1,6 +1,6 @@
 # AgentKnowledgeHub
 
-[![Python CI](https://github.com/bcefghj/agent-knowledge-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/bcefghj/agent-knowledge-hub/actions/workflows/ci.yml)
+[![Python CI](https://github.com/YYL424/agent-knowledge-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/YYL424/agent-knowledge-hub/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11--3.13-3776AB?logo=python)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
