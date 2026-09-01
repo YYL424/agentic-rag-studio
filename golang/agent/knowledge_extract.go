@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bcefghj/agent-knowledge-hub/config"
-	"github.com/bcefghj/agent-knowledge-hub/model"
+	"github.com/YYL424/agentic-rag-studio/config"
+	"github.com/YYL424/agentic-rag-studio/model"
 	openai "github.com/sashabaranov/go-openai"
 )
 

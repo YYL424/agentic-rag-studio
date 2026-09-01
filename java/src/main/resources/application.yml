@@ -3,7 +3,7 @@ server:
 
 spring:
   application:
-    name: agent-knowledge-hub
+    name: agentic-rag-studio
 
   ai:
     openai:

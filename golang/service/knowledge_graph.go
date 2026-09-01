@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bcefghj/agent-knowledge-hub/config"
-	"github.com/bcefghj/agent-knowledge-hub/model"
+	"github.com/YYL424/agentic-rag-studio/config"
+	"github.com/YYL424/agentic-rag-studio/model"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 

@@ -82,12 +82,12 @@ class Settings(BaseSettings):
     chunk_overlap: int = 64
 
     # ── MCP Server (Phase 2) ────────────────────────────
-    mcp_server_name: str = "agent-knowledge-hub"
+    mcp_server_name: str = "agentic-rag-studio"
 
     # ── LangSmith 可观测性 (Phase 5) ────────────────────
     # 设置 langsmith_api_key 后自动开启全链路追踪
     langsmith_api_key: str = ""
-    langsmith_project: str = "agent-knowledge-hub"
+    langsmith_project: str = "agentic-rag-studio"
     langsmith_tracing: bool = False
 
     # ── API ─────────────────────────────────────────────

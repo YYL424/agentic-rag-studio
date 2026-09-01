@@ -6,7 +6,7 @@ MCP (Model Context Protocol) Server — 将核心能力封装为 MCP tools
 
 接入客户端 (Claude Desktop / Cline / Cursor 等):
   "mcpServers": {
-    "agent-knowledge-hub": {
+    "agentic-rag-studio": {
       "command": "python",
       "args": ["<项目路径>/python/mcp_server.py"]
     }
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 def _build_mcp():
     from mcp.server.fastmcp import FastMCP
 
-    mcp = FastMCP("agent-knowledge-hub")
+    mcp = FastMCP("agentic-rag-studio")
 
     # 懒加载服务 (仅当对应工具被调用时初始化)
     _state: dict[str, Any] = {}

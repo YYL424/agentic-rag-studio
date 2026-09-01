@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bcefghj/agent-knowledge-hub/model"
+	"github.com/YYL424/agentic-rag-studio/model"
 )
 
 const (

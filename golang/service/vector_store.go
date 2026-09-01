@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/bcefghj/agent-knowledge-hub/model"
+	"github.com/YYL424/agentic-rag-studio/model"
 )
 
 // VectorStoreService 向量存储服务 (Go版)

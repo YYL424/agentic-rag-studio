@@ -5,9 +5,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/bcefghj/agent-knowledge-hub/api"
-	"github.com/bcefghj/agent-knowledge-hub/config"
-	"github.com/bcefghj/agent-knowledge-hub/service"
+	"github.com/YYL424/agentic-rag-studio/api"
+	"github.com/YYL424/agentic-rag-studio/config"
+	"github.com/YYL424/agentic-rag-studio/service"
 )
 
 func main() {
@@ -24,7 +24,7 @@ func main() {
 	_ = os.MkdirAll("./uploads", 0o755)
 
 	server := api.NewServer(cfg, vs, kg)
-	fmt.Printf("AgentKnowledgeHub (Go) starting on port %s\n", cfg.APIPort)
+	fmt.Printf("Agentic RAG Studio (Go) starting on port %s\n", cfg.APIPort)
 	if err := server.Run(); err != nil {
 		log.Fatal(err)
 	}

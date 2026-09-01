@@ -1,6 +1,6 @@
-# AgentKnowledgeHub
+# Agentic RAG Studio
 
-[![Python CI](https://github.com/YYL424/agent-knowledge-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/YYL424/agent-knowledge-hub/actions/workflows/ci.yml)
+[![Python CI](https://github.com/YYL424/agentic-rag-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/YYL424/agentic-rag-studio/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11--3.13-3776AB?logo=python)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
@@ -196,7 +196,7 @@ python benchmarks/baseline_vs_modern.py \
 ## 项目结构
 
 ```text
-agent-knowledge-hub/
+agentic-rag-studio/
 ├── python/
 │   ├── agents/            # 解析、抽取、问答、更新
 │   ├── orchestrator/      # 三条 LangGraph 工作流

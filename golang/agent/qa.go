@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bcefghj/agent-knowledge-hub/config"
-	"github.com/bcefghj/agent-knowledge-hub/model"
-	"github.com/bcefghj/agent-knowledge-hub/service"
+	"github.com/YYL424/agentic-rag-studio/config"
+	"github.com/YYL424/agentic-rag-studio/model"
+	"github.com/YYL424/agentic-rag-studio/service"
 	openai "github.com/sashabaranov/go-openai"
 )
 

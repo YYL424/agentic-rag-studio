@@ -3,9 +3,9 @@ package api
 import (
 	"net/http"
 
-	"github.com/bcefghj/agent-knowledge-hub/agent"
-	"github.com/bcefghj/agent-knowledge-hub/config"
-	"github.com/bcefghj/agent-knowledge-hub/service"
+	"github.com/YYL424/agentic-rag-studio/agent"
+	"github.com/YYL424/agentic-rag-studio/config"
+	"github.com/YYL424/agentic-rag-studio/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -108,5 +108,5 @@ func (s *Server) handleStats(c *gin.Context) {
 }
 
 func (s *Server) handleHealth(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "AgentKnowledgeHub-Go"})
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "AgenticRAGStudio-Go"})
 }

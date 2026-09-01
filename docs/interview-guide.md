@@ -1,4 +1,4 @@
-# AgentKnowledgeHub 面试指南
+# Agentic RAG Studio 面试指南
 
 ## 90 秒项目介绍
 

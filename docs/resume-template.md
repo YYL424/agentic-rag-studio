@@ -2,7 +2,7 @@
 
 ## 推荐项目名称
 
-**AgentKnowledgeHub｜Agentic RAG 企业知识库（个人项目）**
+**Agentic RAG Studio｜图谱增强的智能知识库（个人项目）**
 
 技术栈：Python、LangGraph、FastAPI、Neo4j、Qdrant/Chroma、Kafka、MCP、Docker、pytest
 

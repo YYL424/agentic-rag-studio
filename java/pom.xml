@@ -12,9 +12,9 @@
     </parent>
 
     <groupId>com.agenthub</groupId>
-    <artifactId>agent-knowledge-hub</artifactId>
+    <artifactId>agentic-rag-studio</artifactId>
     <version>1.0.0</version>
-    <name>AgentKnowledgeHub Java</name>
+    <name>Agentic RAG Studio Java</name>
     <description>企业级多Agent知识管理系统 - Java实现</description>
 
     <properties>

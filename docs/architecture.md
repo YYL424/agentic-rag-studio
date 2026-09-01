@@ -1,8 +1,8 @@
-# AgentKnowledgeHub 架构说明
+# Agentic RAG Studio 架构说明
 
 ## 1. 定位
 
-AgentKnowledgeHub 是一个 Agentic RAG 工程原型。它把文档解析、结构化知识抽取、混合检索问答和增量维护拆成职责明确的组件，再由 LangGraph 编排状态、分支、暂停和恢复。
+Agentic RAG Studio 是一个 Agentic RAG 工程原型。它把文档解析、结构化知识抽取、混合检索问答和增量维护拆成职责明确的组件，再由 LangGraph 编排状态、分支、暂停和恢复。
 
 这里的“Agent”指带 LLM 决策或结构化输出的任务角色，不代表多个自治 Agent 通过消息协商。当前系统更准确的表述是：**四个领域 Agent + 三条有状态工作流**。
 

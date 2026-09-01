@@ -39,7 +39,7 @@ async def test_parse_markdown_with_heading_path(parser_structural, tmp_path):
     """Markdown 解析: 标题层级 → heading_path 元数据"""
     md = """# 公司简介
 
-AgentKnowledgeHub 是一个企业级知识管理系统。
+Agentic RAG Studio 是一个企业级知识管理系统。
 
 ## 团队架构
 
@@ -93,7 +93,7 @@ async def test_parse_pdf_with_pymupdf(parser_structural, tmp_path):
     doc = fitz.open()
     page = doc.new_page()
     # 默认 Helvetica 不支持中文, 使用 pymupdf 内置中文字体 china-s
-    page.insert_text((72, 72), "AgentKnowledgeHub 年度报告", fontsize=16, fontname="china-s")  # 大字号 → 标题
+    page.insert_text((72, 72), "Agentic RAG Studio 年度报告", fontsize=16, fontname="china-s")  # 大字号 → 标题
     page.insert_text((72, 120), "本年度营收增长 30%，新增客户 120 家。", fontsize=11, fontname="china-s")
     page.insert_text((72, 160), "张三担任技术总监。", fontsize=11, fontname="china-s")
     doc.save(str(pdf_path))
@@ -103,7 +103,7 @@ async def test_parse_pdf_with_pymupdf(parser_structural, tmp_path):
     assert chunks, "PDF 解析不应为空"
 
     full_text = "\n".join(c.content for c in chunks)
-    assert "AgentKnowledgeHub" in full_text, "PDF 文本提取失败"
+    assert "Agentic RAG Studio" in full_text, "PDF 文本提取失败"
     assert "张三" in full_text
 
     # 字号启发式: 16px 应识别为标题

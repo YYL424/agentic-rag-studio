@@ -1,5 +1,5 @@
 [project]
-name = "agent-knowledge-hub"
+name = "agentic-rag-studio"
 version = "2.0.0"
 description = "Agentic RAG knowledge base with vector and graph retrieval"
 requires-python = ">=3.11,<3.14"

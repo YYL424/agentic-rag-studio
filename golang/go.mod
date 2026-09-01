@@ -1,4 +1,4 @@
-module github.com/bcefghj/agent-knowledge-hub
+module github.com/YYL424/agentic-rag-studio
 
 go 1.25
 

@@ -102,7 +102,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="AgentKnowledgeHub — Agentic RAG Knowledge Base",
+    title="Agentic RAG Studio — Agentic RAG Knowledge Base",
     description="支持文档解析、知识图谱、增量更新、HITL 和 SSE 的 Agentic RAG 工程原型",
     version="2.0.0",
     lifespan=lifespan,
@@ -615,7 +615,7 @@ async def health():
     ready = bool(dependencies) and all(dependencies.values())
     return {
         "status": "ok" if ready else "degraded",
-        "service": "AgentKnowledgeHub",
+        "service": "AgenticRAGStudio",
         "version": "2.0.0",
         "dependencies": dependencies,
     }
@@ -644,7 +644,7 @@ CHAT_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AgentKnowledgeHub — Agentic RAG 知识库</title>
+<title>Agentic RAG Studio — Agentic RAG 知识库</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;height:100vh;display:flex}
@@ -702,7 +702,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <body>
 <div class="sidebar">
   <div class="sidebar-header">
-    <h1>🤖 AgentKnowledgeHub</h1>
+    <h1>🤖 Agentic RAG Studio</h1>
     <p>Agentic RAG 知识库 v2.0</p>
   </div>
   <input class="api-key" type="password" id="apiKeyInput" placeholder="写接口 API Key（可选）" autocomplete="off">
