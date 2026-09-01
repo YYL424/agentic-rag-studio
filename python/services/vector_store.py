@@ -44,7 +44,12 @@ class VectorStoreService:
         """根据 settings.vector_store_type 选择后端 (factory)"""
         if self.embeddings is None:
             self.embeddings = create_embeddings()
-        self._store = await self._create_backend()
+        try:
+            self._store = await self._create_backend()
+        except Exception:
+            # Qdrant/Chroma 可能在 schema 校验前已打开本地 SQLite 句柄。
+            await self.close()
+            raise
 
     async def close(self) -> None:
         """释放嵌入式数据库文件句柄。"""
@@ -98,7 +103,12 @@ class VectorStoreService:
             client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None)
             logger.info("Qdrant server mode: %s", settings.qdrant_url)
         else:
-            client = QdrantClient(path=settings.qdrant_path)
+            # 嵌入式调用由 asyncio.to_thread 执行；显式关闭同线程限制也跳过
+            # qdrant-client 的临时 SQLite threadsafety 探测连接泄漏。
+            client = QdrantClient(
+                path=settings.qdrant_path,
+                force_disable_check_same_thread=True,
+            )
             logger.info("Qdrant embedded mode: %s", settings.qdrant_path)
 
         self._store = client
