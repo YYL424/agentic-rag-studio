@@ -112,9 +112,12 @@ def _build_fake_hitl_ingest_graph():
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     """TestClient + lifespan 启动 (外部服务初始化失败会被优雅降级)"""
     import api.main as api_mod
+
+    monkeypatch.setattr(api_mod.settings, "upload_dir", str(tmp_path))
+    api_mod.document_registry = None
 
     with pytest.MonkeyPatch.context() as mp:
         # 阻止 lifespan 尝试连接真实 chroma/neo4j
@@ -200,6 +203,78 @@ def test_ingest_upload_requires_review_then_approve(client):
     assert final["entities_stored"] == 1
 
 
+def test_duplicate_upload_returns_existing_document(client):
+    c, api_mod = client
+    api_mod.workflows["ingest"] = _build_fake_hitl_ingest_graph()
+
+    first = c.post("/api/ingest/upload", files={"file": ("one.md", b"same", "text/markdown")})
+    second = c.post("/api/ingest/upload", files={"file": ("copy.md", b"same", "text/markdown")})
+    documents = c.get("/api/documents")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["status"] == "already_exists"
+    assert second.json()["duplicate"] is True
+    assert second.json()["file_id"] == first.json()["file_id"]
+    assert len(documents.json()) == 1
+
+
+def test_failed_upload_can_be_retried(client, tmp_path):
+    from types import SimpleNamespace
+
+    c, api_mod = client
+
+    class FailOnceWorkflow:
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, state, config):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary extraction failure")
+            return {
+                "chunks": [object()],
+                "extractions": [SimpleNamespace(entities=[], relations=[])],
+            }
+
+    workflow = FailOnceWorkflow()
+    api_mod.workflows["ingest"] = workflow
+
+    class FakeCleanupWorkflow:
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, state, config):
+            self.calls += 1
+            change = state["changes"][0]
+            return {"results": [SimpleNamespace(
+                change=change,
+                vectors_added=0,
+                vectors_deleted=1,
+                entities_added=0,
+                relations_added=0,
+                chunks_reprocessed=0,
+                chunks_unchanged=0,
+                success=True,
+                processing_time_ms=1.0,
+            )]}
+
+    cleanup = FakeCleanupWorkflow()
+    api_mod.workflows["update"] = cleanup
+
+    first = c.post("/api/ingest/upload", files={"file": ("retry.md", b"retry", "text/markdown")})
+    second = c.post("/api/ingest/upload", files={"file": ("retry.md", b"retry", "text/markdown")})
+
+    assert first.status_code == 500
+    assert second.status_code == 200
+    assert second.json()["status"] == "success"
+    assert second.json()["duplicate"] is False
+    assert workflow.calls == 2
+    assert cleanup.calls == 1
+    assert len(list(tmp_path.glob("*.md"))) == 1
+    assert [document["status"] for document in c.get("/api/documents").json()] == ["success"]
+
+
 def test_ingest_review_reject(client):
     """审核驳回: 不入库"""
     c, api_mod = client
@@ -216,13 +291,21 @@ def test_ingest_review_reject(client):
 
 
 def test_admin_delete_removes_managed_upload(client, tmp_path, monkeypatch):
-    """删除更新成功后应清理上传文件，且仅允许 upload_dir 内路径。"""
+    """文档删除端点应清理上传文件和持久化目录记录。"""
     from types import SimpleNamespace
 
     c, api_mod = client
     monkeypatch.setattr(api_mod.settings, "upload_dir", str(tmp_path))
     managed_file = tmp_path / "managed.md"
     managed_file.write_text("test", encoding="utf-8")
+    registry = api_mod._get_document_registry()
+    registry.register(
+        file_id="managed.md",
+        original_name="managed.md",
+        content_sha256="9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        file_size=4,
+        thread_id="ingest-delete-test",
+    )
 
     class FakeUpdateWorkflow:
         async def ainvoke(self, state, config):
@@ -240,11 +323,55 @@ def test_admin_delete_removes_managed_upload(client, tmp_path, monkeypatch):
             )]}
 
     api_mod.workflows["update"] = FakeUpdateWorkflow()
-    resp = c.post("/api/admin/update", json={"file_path": "managed.md", "change_type": "deleted"})
+    resp = c.delete("/api/documents/managed.md")
 
     assert resp.status_code == 200
     assert resp.json()["vectors_deleted"] == 2
     assert not managed_file.exists()
+    assert registry.get("managed.md") is None
+
+
+def test_delete_pending_document_cancels_review_thread(client):
+    from types import SimpleNamespace
+
+    c, api_mod = client
+    api_mod.workflows["ingest"] = _build_fake_hitl_ingest_graph()
+
+    class FakeUpdateWorkflow:
+        async def ainvoke(self, state, config):
+            change = state["changes"][0]
+            return {"results": [SimpleNamespace(
+                change=change,
+                vectors_added=0,
+                vectors_deleted=0,
+                entities_added=0,
+                relations_added=0,
+                chunks_reprocessed=0,
+                chunks_unchanged=0,
+                success=True,
+                processing_time_ms=1.0,
+            )]}
+
+    api_mod.workflows["update"] = FakeUpdateWorkflow()
+    uploaded = c.post(
+        "/api/ingest/upload",
+        files={"file": ("pending.md", b"pending", "text/markdown")},
+    ).json()
+
+    deleted = c.delete(f"/api/documents/{uploaded['file_id']}")
+    resumed = c.post(
+        "/api/ingest/review",
+        json={"thread_id": uploaded["thread_id"], "approved": True},
+    )
+
+    assert deleted.status_code == 200
+    assert resumed.status_code == 404
+    assert c.get("/api/documents").json() == []
+
+
+def test_delete_unknown_document_returns_not_found(client):
+    c, _ = client
+    assert c.delete("/api/documents/missing.md").status_code == 404
 
 
 # ── 健康检查 ─────────────────────────────────────────────────
@@ -284,3 +411,7 @@ def test_root_html(client):
     assert "⏳ 解析中" in resp.text
     assert "原因: ' + detail" in resp.text
     assert "e.target.value = ''" in resp.text
+    assert "async function loadDocuments()" in resp.text
+    assert "async function reviewDocument(threadId, approved)" in resp.text
+    assert "async function deleteDocument(fileId, name)" in resp.text
+    assert "data.duplicate" in resp.text

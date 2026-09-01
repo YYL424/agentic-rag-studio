@@ -15,6 +15,8 @@ FastAPI 入口 — 企业知识管理系统 REST API
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -36,6 +38,7 @@ from agents.qa_agent import QAAgent
 from config import settings
 from orchestrator.graph import build_knowledge_graph_workflow
 from services.entity_resolver import EntityResolver
+from services.document_registry import DocumentRegistry
 from services.knowledge_graph import KnowledgeGraphService
 from services.vector_store import VectorStoreService
 
@@ -44,6 +47,18 @@ logger = logging.getLogger("uvicorn")
 vector_store: VectorStoreService | None = None
 knowledge_graph: KnowledgeGraphService | None = None
 workflows: dict[str, Any] = {}
+document_registry: DocumentRegistry | None = None
+
+
+def _get_document_registry() -> DocumentRegistry:
+    """Return a registry bound to the current upload_dir (tests may override it)."""
+    global document_registry
+    registry_name = Path(settings.document_registry_file).name
+    expected = (Path(settings.upload_dir).resolve() / registry_name).resolve()
+    if document_registry is None or document_registry.database_path != expected:
+        document_registry = DocumentRegistry(expected)
+        document_registry.init()
+    return document_registry
 
 
 def _setup_langsmith() -> None:
@@ -61,6 +76,7 @@ def _setup_langsmith() -> None:
 async def lifespan(app: FastAPI):
     global vector_store, knowledge_graph
     os.makedirs(settings.upload_dir, exist_ok=True)
+    _get_document_registry()
     _setup_langsmith()
     vector_store = VectorStoreService()
     knowledge_graph = KnowledgeGraphService()
@@ -116,6 +132,7 @@ class IngestResponse(BaseModel):
     entities_count: int
     relations_count: int
     status: str
+    duplicate: bool = False
     thread_id: str = ""
     pending_review: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -136,6 +153,19 @@ class ReviewResponse(BaseModel):
 class StatsResponse(BaseModel):
     vector_store: dict[str, Any]
     knowledge_graph: dict[str, Any]
+
+
+class DocumentResponse(BaseModel):
+    file_id: str
+    original_name: str
+    file_size: int
+    status: str
+    chunks_count: int
+    entities_count: int
+    relations_count: int
+    thread_id: str
+    created_at: str
+    updated_at: str
 
 
 class UpdateRequest(BaseModel):
@@ -167,7 +197,7 @@ async def require_write_access(
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
-async def _save_upload(file: UploadFile) -> tuple[str, str]:
+async def _save_upload(file: UploadFile) -> tuple[str, str, str, int]:
     original_name = Path(file.filename or "unknown").name
     suffix = Path(original_name).suffix.lower()
     if suffix not in DocParserAgent.SUPPORTED_EXTENSIONS:
@@ -178,6 +208,7 @@ async def _save_upload(file: UploadFile) -> tuple[str, str]:
     save_path = upload_root / f"{uuid.uuid4().hex}{suffix}"
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     total = 0
+    digest = hashlib.sha256()
     try:
         with save_path.open("wb") as target:
             while chunk := await file.read(1024 * 1024):
@@ -187,11 +218,12 @@ async def _save_upload(file: UploadFile) -> tuple[str, str]:
                         status_code=413,
                         detail=f"File exceeds {settings.max_upload_size_mb} MB limit",
                     )
+                digest.update(chunk)
                 target.write(chunk)
     except Exception:
         save_path.unlink(missing_ok=True)
         raise
-    return str(save_path), original_name
+    return str(save_path), original_name, digest.hexdigest(), total
 
 
 def _resolve_managed_path(file_path: str) -> str:
@@ -216,14 +248,67 @@ async def upload_document(file: UploadFile = File(...)):
     ingest_wf = workflows.get("ingest")
     if not ingest_wf:
         raise HTTPException(status_code=503, detail="Ingest workflow not initialized")
-    save_path, original_name = await _save_upload(file)
+    save_path, original_name, content_sha256, file_size = await _save_upload(file)
     file_id = Path(save_path).name
 
     thread_id = f"ingest-{uuid.uuid4().hex[:12]}"
-    result = await ingest_wf.ainvoke(
-        {"file_paths": [save_path]},
-        config={"configurable": {"thread_id": thread_id}},
+    registry = _get_document_registry()
+    record, created = await asyncio.to_thread(
+        registry.register,
+        file_id=file_id,
+        original_name=original_name,
+        content_sha256=content_sha256,
+        file_size=file_size,
+        thread_id=thread_id,
     )
+    if not created and record["status"] in {"failed", "rejected"}:
+        # 重试前按旧 file_id 执行跨存储补偿，避免上次部分成功留下孤立向量或图事实。
+        try:
+            cleanup_result = await trigger_update(
+                UpdateRequest(file_path=record["file_id"], change_type="deleted")
+            )
+            if not cleanup_result.success:
+                raise HTTPException(status_code=500, detail="cleanup workflow reported failure")
+        except HTTPException as exc:
+            Path(save_path).unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=409,
+                detail=f"Previous failed ingestion could not be cleaned up: {exc.detail}",
+            ) from exc
+        record, created = await asyncio.to_thread(
+            registry.register,
+            file_id=file_id,
+            original_name=original_name,
+            content_sha256=content_sha256,
+            file_size=file_size,
+            thread_id=thread_id,
+        )
+    if not created:
+        Path(save_path).unlink(missing_ok=True)
+        return IngestResponse(
+            file_name=record["original_name"],
+            file_id=record["file_id"],
+            chunks_count=record["chunks_count"],
+            entities_count=record["entities_count"],
+            relations_count=record["relations_count"],
+            status="already_exists",
+            duplicate=True,
+            thread_id=record["thread_id"],
+        )
+
+    try:
+        result = await ingest_wf.ainvoke(
+            {"file_paths": [save_path]},
+            config={"configurable": {"thread_id": thread_id}},
+        )
+    except Exception as exc:
+        await asyncio.to_thread(
+            registry.update,
+            file_id,
+            status="failed",
+            error_message=str(exc)[:500],
+        )
+        raise HTTPException(status_code=500, detail=f"Document ingestion failed: {str(exc)[:200]}") from exc
 
     chunks = result.get("chunks", [])
     extractions = result.get("extractions", [])
@@ -234,6 +319,14 @@ async def upload_document(file: UploadFile = File(...)):
     interrupts = result.get("__interrupt__", [])
     if interrupts:
         pending = interrupts[0].value if interrupts else {}
+        await asyncio.to_thread(
+            registry.update,
+            file_id,
+            status="review_required",
+            chunks_count=len(chunks),
+            entities_count=total_entities,
+            relations_count=total_relations,
+        )
         return IngestResponse(
             file_name=original_name,
             file_id=file_id,
@@ -245,6 +338,14 @@ async def upload_document(file: UploadFile = File(...)):
             pending_review=pending.get("entities", []) + pending.get("relations", []),
         )
 
+    await asyncio.to_thread(
+        registry.update,
+        file_id,
+        status="success",
+        chunks_count=len(chunks),
+        entities_count=total_entities,
+        relations_count=total_relations,
+    )
     return IngestResponse(
         file_name=original_name,
         file_id=file_id,
@@ -267,6 +368,12 @@ async def review_extractions(req: ReviewRequest):
     ingest_wf = workflows.get("ingest")
     if not ingest_wf:
         raise HTTPException(status_code=503, detail="Ingest workflow not initialized")
+    registry = _get_document_registry()
+    record = await asyncio.to_thread(registry.get_by_thread_id, req.thread_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pending review not found")
+    if record["status"] != "review_required":
+        raise HTTPException(status_code=409, detail=f"Document is not pending review: {record['status']}")
 
     try:
         resume_value = {"approved": req.approved} if req.approved else {"approved": False}
@@ -278,6 +385,13 @@ async def review_extractions(req: ReviewRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Resume failed: {e}")
+
+    status = final.get("review_note", "unknown")
+    await asyncio.to_thread(
+        registry.update,
+        record["file_id"],
+        status="success" if status in {"approved", "corrected"} else status,
+    )
 
     return ReviewResponse(
         thread_id=req.thread_id,
@@ -407,6 +521,52 @@ async def get_stats():
     return StatsResponse(vector_store=vs_stats, knowledge_graph=kg_stats)
 
 
+@app.get("/api/documents", response_model=list[DocumentResponse], tags=["文档管理"])
+async def list_documents():
+    """返回持久化文档目录，页面刷新后仍可恢复上传状态。"""
+    return await asyncio.to_thread(_get_document_registry().list_documents)
+
+
+@app.delete(
+    "/api/documents/{file_id}",
+    response_model=UpdateResponse,
+    tags=["文档管理"],
+    dependencies=[Depends(require_write_access)],
+)
+async def delete_document(file_id: str):
+    """按上传响应中的 file_id 清理文件、向量、图谱和目录记录。"""
+    if Path(file_id).name != file_id:
+        raise HTTPException(status_code=400, detail="Invalid file_id")
+    registry = _get_document_registry()
+    record = await asyncio.to_thread(registry.get, file_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # 删除待审核文档前先以 rejected 恢复工作流，确保两个写分支都被门禁。
+    if record["status"] == "review_required" and record["thread_id"]:
+        ingest_wf = workflows.get("ingest")
+        if not ingest_wf:
+            raise HTTPException(status_code=503, detail="Ingest workflow not initialized")
+        try:
+            await ingest_wf.ainvoke(
+                Command(resume={"approved": False, "note": "Document deleted before review"}),
+                config={"configurable": {"thread_id": record["thread_id"]}},
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=f"Could not cancel pending review: {exc}") from exc
+
+    result = await trigger_update(UpdateRequest(file_path=file_id, change_type="deleted"))
+    if result.success and record["thread_id"]:
+        checkpointer = getattr(workflows.get("ingest"), "checkpointer", None)
+        delete_thread = getattr(checkpointer, "adelete_thread", None)
+        if callable(delete_thread):
+            try:
+                await delete_thread(record["thread_id"])
+            except Exception as exc:
+                logger.warning("ingest checkpoint cleanup failed for %s: %s", record["thread_id"], exc)
+    return result
+
+
 @app.post(
     "/api/admin/update",
     response_model=UpdateResponse,
@@ -435,6 +595,7 @@ async def trigger_update(req: UpdateRequest):
     r = results[0]
     if req.change_type == "deleted" and r.success:
         Path(managed_path).unlink(missing_ok=True)
+        await asyncio.to_thread(_get_document_registry().delete, Path(managed_path).name)
     return UpdateResponse(
         file_path=r.change.file_path,
         vectors_added=r.vectors_added,
@@ -500,11 +661,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .upload-zone .text{font-size:13px;color:#94a3b8}
 .file-list{flex:1;overflow-y:auto;padding:0 16px;font-size:12px}
 .file-item{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;margin:4px 0;background:#0f172a;border-radius:8px}
-.file-item .name{color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.file-item .name{color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;margin-right:8px}
 .file-item .status{font-size:11px;padding:2px 8px;border-radius:10px}
 .file-item .status.ok{background:#065f46;color:#6ee7b7}
 .file-item .status.err{background:#7f1d1d;color:#fca5a5}
 .file-item .status.pending{background:#78350f;color:#fbbf24}
+.file-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}
+.file-btn{border:0;border-radius:6px;padding:3px 7px;font-size:11px;cursor:pointer;background:#334155;color:#cbd5e1}
+.file-btn:hover{background:#475569}
+.file-btn.approve{background:#065f46;color:#a7f3d0}
+.file-btn.reject,.file-btn.delete{background:#7f1d1d;color:#fecaca}
 .upload-zone.busy{pointer-events:none;opacity:.65}
 .stats-bar{padding:16px;border-top:1px solid #334155;font-size:12px;color:#94a3b8}
 .stats-bar span{color:#818cf8;font-weight:600}
@@ -619,8 +785,15 @@ async function uploadFiles(files) {
       try { data = await res.json(); } catch(e) {}
       const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
       if (res.ok) {
+        if (data.duplicate) {
+          uploadedFiles = uploadedFiles.filter(candidate => candidate !== item);
+          addMsg('agent', 'ℹ️ 文档内容已存在，无需重复入库: ' + data.file_name);
+          await loadDocuments();
+          await loadStats();
+          continue;
+        }
         const pending = data.status === 'review_required';
-        Object.assign(item, { name: data.file_name, fileId: data.file_id, chunks: data.chunks_count, uploading: false, ok: !pending, pending });
+        Object.assign(item, { name: data.file_name, fileId: data.file_id, threadId: data.thread_id, chunks: data.chunks_count, uploading: false, ok: !pending, pending, status: data.status });
         if (pending) {
           addMsg('agent', '📄 文档 ' + data.file_name + ' 已解析，等待人工审核（thread: ' + data.thread_id.slice(0,8) + '）\n分块: ' + data.chunks_count + ' | 实体: ' + data.entities_count + ' | 关系: ' + data.relations_count + ' | 用时: ' + elapsed + ' 秒');
         } else {
@@ -635,7 +808,7 @@ async function uploadFiles(files) {
       Object.assign(item, { uploading: false, ok: false });
       addMsg('agent', '❌ 网络错误: ' + f.name + '\n原因: ' + (e.message || '无法连接 API 服务'));
     }
-    renderFiles();
+    await loadDocuments();
     await loadStats();
   }
   uploadZone.classList.remove('busy');
@@ -645,7 +818,72 @@ async function uploadFiles(files) {
 function renderFiles() {
   const el = document.getElementById('fileList');
   if (!uploadedFiles.length) { el.innerHTML = '<div style="text-align:center;color:#475569;padding:20px">暂无文档</div>'; return; }
-  el.innerHTML = uploadedFiles.map(f => '<div class="file-item"><span class="name" title="'+escapeHtml(f.name)+'">'+escapeHtml(f.name)+'</span><span class="status '+((f.uploading||f.pending)?'pending':(f.ok?'ok':'err'))+'">'+(f.uploading?'⏳ 解析中':(f.pending?'⏳ 待审核':(f.ok?'✓ 已入库':'✗ 失败')))+'</span></div>').join('');
+  el.innerHTML = uploadedFiles.map(f => {
+    const statusClass = (f.uploading || f.pending) ? 'pending' : (f.ok ? 'ok' : 'err');
+    const statusText = f.uploading ? '⏳ 解析中' : (f.pending ? '⏳ 待审核' : (f.ok ? '✓ 已入库' : (f.status === 'rejected' ? '✗ 已驳回' : '✗ 失败')));
+    let actions = '<span class="status '+statusClass+'">'+statusText+'</span>';
+    if (f.pending && f.threadId) {
+      actions += '<button class="file-btn approve" data-thread="'+escapeHtml(f.threadId)+'" onclick="reviewDocument(this.dataset.thread,true)">通过</button>';
+      actions += '<button class="file-btn reject" data-thread="'+escapeHtml(f.threadId)+'" onclick="reviewDocument(this.dataset.thread,false)">驳回</button>';
+    }
+    if (f.fileId && !f.uploading) {
+      actions += '<button class="file-btn delete" data-file="'+escapeHtml(f.fileId)+'" data-name="'+escapeHtml(f.name)+'" onclick="deleteDocument(this.dataset.file,this.dataset.name)">删除</button>';
+    }
+    return '<div class="file-item"><span class="name" title="'+escapeHtml(f.name)+'">'+escapeHtml(f.name)+'</span><span class="file-actions">'+actions+'</span></div>';
+  }).join('');
+}
+
+async function loadDocuments() {
+  try {
+    const res = await fetch(API + '/api/documents');
+    if (!res.ok) return;
+    const records = await res.json();
+    uploadedFiles = records.map(record => ({
+      name: record.original_name,
+      fileId: record.file_id,
+      threadId: record.thread_id,
+      chunks: record.chunks_count,
+      status: record.status,
+      uploading: record.status === 'processing',
+      pending: record.status === 'review_required',
+      ok: record.status === 'success'
+    }));
+    renderFiles();
+  } catch(e) {}
+}
+
+async function reviewDocument(threadId, approved) {
+  try {
+    const res = await fetch(API + '/api/ingest/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...writeHeaders() },
+      body: JSON.stringify({ thread_id: threadId, approved, note: approved ? '' : 'Rejected from web UI' })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : ('HTTP ' + res.status));
+    addMsg('agent', approved ? '✅ 文档审核通过并已入库' : '🚫 文档已驳回');
+  } catch(e) {
+    addMsg('agent', '❌ 审核操作失败\n原因: ' + (e.message || '未知错误'));
+  }
+  await loadDocuments();
+  await loadStats();
+}
+
+async function deleteDocument(fileId, name) {
+  if (!confirm('确认删除文档「' + name + '」及其向量和图谱数据？')) return;
+  try {
+    const res = await fetch(API + '/api/documents/' + encodeURIComponent(fileId), {
+      method: 'DELETE',
+      headers: writeHeaders()
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : ('HTTP ' + res.status));
+    addMsg('agent', '🗑️ 已删除文档: ' + name + '\n清理向量: ' + data.vectors_deleted);
+  } catch(e) {
+    addMsg('agent', '❌ 删除失败: ' + name + '\n原因: ' + (e.message || '未知错误'));
+  }
+  await loadDocuments();
+  await loadStats();
 }
 
 async function ask() {
@@ -773,7 +1011,7 @@ async function loadStats() {
   } catch(e) {}
 }
 
-loadStats();
+void Promise.all([loadDocuments(), loadStats()]);
 </script>
 </body>
 </html>"""

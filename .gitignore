@@ -50,6 +50,7 @@ docker-compose.override.yml
 # ── Data & Uploads ────────────────
 uploads/
 *.sqlite
+*.sqlite3
 *.db
 data/
 

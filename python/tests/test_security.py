@@ -11,13 +11,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 @pytest.fixture
-def client():
+def client(tmp_path):
     import api.main as api_mod
     from services.knowledge_graph import KnowledgeGraphService
     from services.vector_store import VectorStoreService
     from tests.test_api import _build_fake_hitl_ingest_graph
 
     with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(api_mod.settings, "upload_dir", str(tmp_path))
+        api_mod.document_registry = None
         async def noop_init(self):
             return None
 
@@ -105,7 +107,7 @@ def test_upload_size_limit(client, tmp_path, monkeypatch):
         files={"file": ("large.md", b"x" * (1024 * 1024 + 1), "text/markdown")},
     )
     assert response.status_code == 413
-    assert not list(tmp_path.iterdir())
+    assert not list(tmp_path.glob("*.md"))
 
 
 def test_batch_file_count_limit(client, monkeypatch):

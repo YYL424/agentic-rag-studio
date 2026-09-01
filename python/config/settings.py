@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o"
     structured_output_method: Literal["auto", "function_calling", "json_mode"] = "auto"
+    structured_output_timeout_seconds: float = Field(default=60, gt=0, le=300)
 
     # ── Embedding: "api" (OpenAI-compatible) | "local" (BGE / ONNX fallback) ──
     embedding_backend: Literal["api", "local"] = "local"
@@ -95,6 +96,7 @@ class Settings(BaseSettings):
 
     # ── Document Store ──────────────────────────────────
     upload_dir: str = "./uploads"
+    document_registry_file: str = ".documents.sqlite3"
 
     @model_validator(mode="after")
     def validate_chunk_settings(self):
