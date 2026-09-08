@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import sys
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,9 @@ class MutableDocParser:
             )
             for i, text in enumerate(contents)
         ]
+
+    async def parse_batch(self, file_paths):
+        return [chunk for path in file_paths for chunk in await self.parse(path)]
 
 
 class TrackingVectorStore:
@@ -203,6 +207,117 @@ async def test_modify_without_snapshot_falls_back_to_full(tmp_path, monkeypatch)
     assert result.success
     assert result.chunks_reprocessed == 1
     assert result.vectors_added == 1
+
+    assert vs.deleted_by_doc == [hashlib.sha256(b"a.md").hexdigest()[:16]]
+    assert kg.deleted_sources == ["a.md"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_then_first_modify_after_restart(tmp_path, monkeypatch):
+    from orchestrator.graph import _build_ingest_graph, create_checkpointer
+
+    parser = MutableDocParser({"a.md": ["unchanged", "annual leave: 10 days", "obsolete"]})
+    extractor, vs, kg = TrackingExtractor(), TrackingVectorStore(), TrackingKG()
+    agent = _make_agent(parser, extractor, vs, kg, tmp_path, monkeypatch)
+    graph = _build_ingest_graph(
+        parser, extractor, vs, kg, create_checkpointer("memory"), False,
+        update_agent=agent,
+    )
+    await graph.ainvoke({"file_paths": ["a.md"]}, {"configurable": {"thread_id": "first-upload"}})
+    # A fresh worker must use the persisted upload baseline, not a full rebuild.
+    restarted = _make_agent(parser, extractor, vs, kg, tmp_path, monkeypatch)
+    parser.doc_contents["a.md"] = ["unchanged", "annual leave: 15 days"]
+    vs.added_ids.clear()
+    extractor.extracted_texts.clear()
+    result = await restarted.process_change(DocumentChange("a.md", ChangeType.MODIFIED))
+    assert result.success
+    assert result.chunks_unchanged == 1
+    assert result.chunks_reprocessed == 1
+    assert len(vs.deleted_ids) == 2
+    assert kg.deleted_chunk_ids == vs.deleted_ids
+    assert not vs.deleted_by_doc
+    assert extractor.extracted_texts == ["annual leave: 15 days"]
+
+
+@pytest.mark.asyncio
+async def test_missing_snapshot_cleanup_failure_stops_rebuild(tmp_path, monkeypatch):
+    parser = MutableDocParser({"a.md": ["new content"]})
+    extractor, vs, kg = TrackingExtractor(), TrackingVectorStore(), TrackingKG()
+    agent = _make_agent(parser, extractor, vs, kg, tmp_path, monkeypatch)
+
+    async def fail_cleanup(source):
+        raise RuntimeError("graph cleanup unavailable")
+
+    monkeypatch.setattr(kg, "delete_by_source", fail_cleanup)
+    result = await agent.process_change(DocumentChange("a.md", ChangeType.MODIFIED))
+    assert not result.success
+    assert "graph cleanup unavailable" in result.error
+    assert not vs.added_ids
+    assert not extractor.extracted_texts
+    assert not list(tmp_path.glob(".snapshots/*.json"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False])
+async def test_ingest_snapshot_respects_review(tmp_path, monkeypatch, approved):
+    from langgraph.types import Command
+    from orchestrator.graph import _build_ingest_graph, create_checkpointer
+
+    parser = MutableDocParser({"a.md": ["reviewed content"]})
+    extractor, vs, kg = TrackingExtractor(), TrackingVectorStore(), TrackingKG()
+    agent = _make_agent(parser, extractor, vs, kg, tmp_path, monkeypatch)
+    graph = _build_ingest_graph(parser, extractor, vs, kg, create_checkpointer("memory"), True, agent)
+    config = {"configurable": {"thread_id": "review-snapshot"}}
+    await graph.ainvoke({"file_paths": ["a.md"]}, config)
+    assert not list(tmp_path.glob(".snapshots/*.json"))
+    await graph.ainvoke(Command(resume={"approved": approved}), config)
+    assert bool(list(tmp_path.glob(".snapshots/*.json"))) is approved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_store", ["vector", "graph"])
+async def test_ingest_storage_failure_does_not_commit_snapshot(tmp_path, monkeypatch, failed_store):
+    from orchestrator.graph import _build_ingest_graph, create_checkpointer
+
+    parser = MutableDocParser({"a.md": ["content"]})
+    extractor, vs, kg = TrackingExtractor(), TrackingVectorStore(), TrackingKG()
+    agent = _make_agent(parser, extractor, vs, kg, tmp_path, monkeypatch)
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("storage unavailable")
+
+    if failed_store == "vector":
+        monkeypatch.setattr(vs, "add_chunks", fail)
+    else:
+        monkeypatch.setattr(kg, "upsert_entity", fail)
+    graph = _build_ingest_graph(parser, extractor, vs, kg, create_checkpointer("memory"), False, agent)
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await graph.ainvoke({"file_paths": ["a.md"]}, {"configurable": {"thread_id": failed_store}})
+    assert not agent._snapshots
+    assert not list(tmp_path.glob(".snapshots/*.json"))
+
+
+@pytest.mark.asyncio
+async def test_snapshot_publish_failure_preserves_previous_baseline(tmp_path, monkeypatch):
+    import os
+
+    parser = MutableDocParser({"a.md": ["old"]})
+    agent = _make_agent(parser, TrackingExtractor(), TrackingVectorStore(), TrackingKG(), tmp_path, monkeypatch)
+    agent._save_snapshot("a.md", await parser.parse("a.md"))
+    doc_id = hashlib.sha256(b"a.md").hexdigest()[:16]
+    before = Path(agent._snapshot_path(doc_id)).read_bytes()
+    parser.doc_contents["a.md"] = ["new"]
+
+    def fail_replace(*args):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    result = await agent.process_change(DocumentChange("a.md", ChangeType.MODIFIED))
+    assert not result.success
+    assert "disk unavailable" in result.error
+    assert Path(agent._snapshot_path(doc_id)).read_bytes() == before
+    assert agent._snapshots[doc_id]["contents"] == ["old"]
+    assert not list(tmp_path.glob(".snapshots/*.tmp"))
 
 
 @pytest.mark.asyncio

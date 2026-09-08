@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -45,6 +46,25 @@ class RetrievedContext:
     retrieval_type: str  # "vector" | "graph" | "hybrid"
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "content": self.content,
+            "source": self.source,
+            "score": self.score,
+            "retrieval_type": self.retrieval_type,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "RetrievedContext":
+        return cls(
+            content=str(value.get("content", "")),
+            source=str(value.get("source", "")),
+            score=float(value.get("score", 0.0)),
+            retrieval_type=str(value.get("retrieval_type", "vector")),
+            metadata=dict(value.get("metadata") or {}),
+        )
+
 
 @dataclass
 class QAResult:
@@ -55,6 +75,11 @@ class QAResult:
     confidence: float
     reasoning_steps: list[str] = field(default_factory=list)
     retrieval_rounds: int = 1
+
+    @property
+    def retrieval_support(self) -> float:
+        """Semantic name for the legacy ``confidence`` response field."""
+        return self.confidence
 
 
 # ── Pydantic Schema (结构化输出契约) ────────────────────────
@@ -97,9 +122,10 @@ ANSWER_PROMPT = """\
 要求：
 1. 答案必须基于提供的上下文，不要编造
 2. 如果上下文信息不足，明确告知用户
-3. 引用信息来源（如 [来源: xxx]）
+3. 每个可验证结论后使用 [1]、[2] 形式引用对应证据编号
 4. 如果涉及多个信息源，综合分析后给出结论
 5. 保持专业、准确、简洁
+6. 不要引用未提供的证据编号
 """
 
 # Self-RAG: 评估检索质量
@@ -147,51 +173,61 @@ class QAAgent:
         """完整问答流程 (Self-RAG + Reranker)"""
         intent = await self._classify_intent(question)
         rewritten = await self._rewrite_query(question)
-
-        rounds = 1
         all_contexts = await self.retrieve(question, rewritten, top_k=8)
-        reasoning_steps = [
-            f"识别问题意图: {intent.value}",
-            f"第 {rounds} 轮检索到 {len(all_contexts)} 条上下文",
-        ]
+        all_contexts, rounds, reasoning_steps = await self.refine_retrieval(
+            question, all_contexts, rounds=1,
+        )
+        reasoning_steps.insert(0, f"识别问题意图: {intent.value}")
+        return await self.build_result(question, intent, all_contexts, rounds, reasoning_steps)
 
-        # ── Self-RAG 自适应检索循环 ──────────────────────────
-        if settings.enable_self_rag and all_contexts:
-            relevance = await self._evaluate_relevance(question, all_contexts)
-            while (
-                relevance is not None
-                and relevance.score < settings.self_rag_threshold
-                and rounds < settings.self_rag_max_rounds
-            ):
-                rounds += 1
-                reasoning_steps.append(
-                    f"检索相关性 {relevance.score:.2f} 低于阈值 {settings.self_rag_threshold}, 改写查询重检 (第 {rounds} 轮)"
-                )
-                rewritten = await self._rewrite_query_self_rag(question, all_contexts)
-                extra = await self.retrieve(question, rewritten, top_k=settings.reranker_top_n)
+    async def refine_retrieval(
+        self,
+        question: str,
+        contexts: list[RetrievedContext],
+        *,
+        rounds: int = 1,
+    ) -> tuple[list[RetrievedContext], int, list[str]]:
+        """Run the bounded Self-RAG loop as a resumable workflow stage."""
+        reasoning_steps = [f"第 {rounds} 轮检索到 {len(contexts)} 条上下文"]
+        if not settings.enable_self_rag:
+            return contexts, rounds, reasoning_steps
 
-                # 合并全部候选, 用 BGE-Reranker 对全集重新精排 (而非简单混合截断)
-                candidates = self._dedup(all_contexts + extra)
-                if self.reranker is not None and len(candidates) > 1:
-                    scores = await self.reranker.arerank(question, [c.content for c in candidates])
-                    if scores is not None:
-                        for ctx, s in zip(candidates, scores):
-                            ctx.score = s
-                        candidates.sort(key=lambda c: c.score, reverse=True)
+        current = contexts
+        while rounds < settings.self_rag_max_rounds:
+            relevance = await self._evaluate_relevance(question, current) if current else None
+            if current and (relevance is None or relevance.score >= settings.self_rag_threshold):
+                break
+            score_text = f"{relevance.score:.2f}" if relevance is not None else "无结果"
+            rounds += 1
+            reasoning_steps.append(
+                f"检索相关性 {score_text}，改写查询重检（第 {rounds} 轮）"
+            )
+            rewritten = await self._rewrite_query_self_rag(question, current)
+            extra = await self.retrieve(question, rewritten, top_k=settings.reranker_top_n)
+            if not extra and not current:
+                break
+            current = self._reciprocal_rank_fusion([current, extra])[:8]
 
-                all_contexts = candidates[:8]
-                relevance = await self._evaluate_relevance(question, all_contexts)
+        return current, rounds, reasoning_steps
 
-        answer_text, reasoning = await self._generate_answer(question, all_contexts, intent)
-        reasoning_steps.extend(reasoning)
-
+    async def build_result(
+        self,
+        question: str,
+        intent: QueryIntent,
+        contexts: list[RetrievedContext],
+        rounds: int,
+        reasoning_steps: list[str],
+    ) -> QAResult:
+        """Generate the grounded answer and assemble the public result."""
+        answer_text, reasoning = await self._generate_answer(question, contexts, intent)
+        final_reasoning = [*reasoning_steps, *reasoning]
         return QAResult(
             question=question,
             answer=answer_text,
-            contexts=all_contexts,
+            contexts=contexts,
             intent=intent,
-            confidence=self._calc_confidence(all_contexts),
-            reasoning_steps=reasoning_steps,
+            confidence=self._calc_confidence(contexts),
+            reasoning_steps=final_reasoning,
             retrieval_rounds=rounds,
         )
 
@@ -210,7 +246,7 @@ class QAAgent:
             self._graph_retrieve(question, rewritten),
         )
 
-        merged = self._hybrid_rerank(vector_contexts + graph_contexts)
+        merged = self._reciprocal_rank_fusion([vector_contexts, graph_contexts])
 
         # BGE Reranker 精排: 粗召回 → 精排
         if self.reranker is not None:
@@ -311,16 +347,26 @@ class QAAgent:
                 results = await self.vector_store.search(query, top_k=5)
             except Exception:
                 return []
-            return [
-                RetrievedContext(
+            contexts = []
+            for doc, score in results:
+                metadata = dict(doc.get("metadata", {}))
+                metadata["citations"] = self._merge_citations(
+                    metadata.get("citations", []),
+                    [{
+                        "source": doc.get("source", "vector_store"),
+                        "chunk_id": metadata.get("chunk_id", ""),
+                        "page": metadata.get("page", 0),
+                        "heading_path": metadata.get("heading_path", ""),
+                    }],
+                )
+                contexts.append(RetrievedContext(
                     content=doc.get("content", ""),
                     source=doc.get("source", "vector_store"),
                     score=score,
                     retrieval_type="vector",
-                    metadata=doc.get("metadata", {}),
-                )
-                for doc, score in results
-            ]
+                    metadata=metadata,
+                ))
+            return contexts
 
         queries = [str(q).strip() for q in rewritten.get("queries", []) if str(q).strip()][:3]
         batches = await asyncio.gather(*(search_one(query) for query in queries)) if queries else []
@@ -352,12 +398,13 @@ class QAAgent:
                     f"{record.get('target', '')} ({record.get('target_type', '')}): "
                     f"{record.get('target_desc', '')}"
                 )
+                citations = self._citations_from_provenance(record.get("provenance", []))
                 contexts.append(RetrievedContext(
                     content=content,
-                    source="knowledge_graph",
-                    score=0.8,
+                    source=citations[0]["source"] if citations else "knowledge_graph",
+                    score=1.0,
                     retrieval_type="graph",
-                    metadata={"entity": entity, "strategy": "neighbors"},
+                    metadata={"entity": entity, "strategy": "neighbors", "citations": citations},
                 ))
 
         path_pairs = [(entities[i], entities[j]) for i in range(len(entities))
@@ -379,12 +426,16 @@ class QAAgent:
                     segments.append(str(node))
                     if idx < len(relations):
                         segments.append(f"--[{relations[idx]}]-->")
+                citations = self._citations_from_provenance(record.get("provenance", []))
                 contexts.append(RetrievedContext(
                     content="推理路径: " + " ".join(segments),
-                    source="knowledge_graph",
-                    score=0.9,
+                    source=citations[0]["source"] if citations else "knowledge_graph",
+                    score=1.0,
                     retrieval_type="graph",
-                    metadata={"from": pair[0], "to": pair[1], "strategy": "shortest_path"},
+                    metadata={
+                        "from": pair[0], "to": pair[1], "strategy": "shortest_path",
+                        "citations": citations,
+                    },
                 ))
         return contexts
 
@@ -392,26 +443,96 @@ class QAAgent:
 
     @staticmethod
     def _hybrid_rerank(contexts: list[RetrievedContext]) -> list[RetrievedContext]:
-        """
-        混合加权粗排: 向量分数 + 图谱分数加权
-        图谱检索结果天然带有结构化关系，给予略高权重
-        (精排交给 BGE Reranker)
-        """
-        weight_map = {"vector": 1.0, "graph": 1.2, "hybrid": 1.1}
-        for ctx in contexts:
-            ctx.score *= weight_map.get(ctx.retrieval_type, 1.0)
-        return QAAgent._dedup(sorted(contexts, key=lambda c: c.score, reverse=True))
+        """Compatibility wrapper using rank fusion instead of incomparable raw scores."""
+        groups = [
+            [context for context in contexts if context.retrieval_type == retrieval_type]
+            for retrieval_type in ("vector", "graph", "hybrid")
+        ]
+        return QAAgent._reciprocal_rank_fusion([group for group in groups if group])
+
+    @staticmethod
+    def _reciprocal_rank_fusion(
+        ranked_lists: list[list[RetrievedContext]],
+        *,
+        rank_constant: int = 60,
+    ) -> list[RetrievedContext]:
+        """Fuse independent ranked lists without comparing their raw score scales."""
+        non_empty = [items for items in ranked_lists if items]
+        if not non_empty:
+            return []
+        fused: dict[str, RetrievedContext] = {}
+        scores: dict[str, float] = {}
+        order: dict[str, int] = {}
+        for items in non_empty:
+            for rank, context in enumerate(QAAgent._dedup(items), start=1):
+                key = QAAgent._context_key(context)
+                scores[key] = scores.get(key, 0.0) + 1.0 / (rank_constant + rank)
+                if key not in fused:
+                    fused[key] = RetrievedContext.from_dict(context.as_dict())
+                    order[key] = len(order)
+                else:
+                    existing = fused[key]
+                    existing.metadata["citations"] = QAAgent._merge_citations(
+                        existing.metadata.get("citations", []),
+                        context.metadata.get("citations", []),
+                    )
+                    if existing.retrieval_type != context.retrieval_type:
+                        existing.retrieval_type = "hybrid"
+        max_score = len(non_empty) / (rank_constant + 1)
+        for key, context in fused.items():
+            context.metadata.setdefault("original_score", context.score)
+            context.score = min(scores[key] / max_score, 1.0)
+        return sorted(fused.values(), key=lambda item: (-item.score, order[QAAgent._context_key(item)]))
 
     @staticmethod
     def _dedup(contexts: list[RetrievedContext]) -> list[RetrievedContext]:
-        seen: set[str] = set()
-        unique: list[RetrievedContext] = []
+        unique: dict[str, RetrievedContext] = {}
         for ctx in contexts:
-            key = ctx.content[:100]
-            if key not in seen:
+            key = QAAgent._context_key(ctx)
+            if key not in unique:
+                unique[key] = RetrievedContext.from_dict(ctx.as_dict())
+                continue
+            existing = unique[key]
+            existing.metadata["citations"] = QAAgent._merge_citations(
+                existing.metadata.get("citations", []), ctx.metadata.get("citations", []),
+            )
+            if existing.retrieval_type != ctx.retrieval_type:
+                existing.retrieval_type = "hybrid"
+            existing.score = max(existing.score, ctx.score)
+        return list(unique.values())
+
+    @staticmethod
+    def _context_key(context: RetrievedContext) -> str:
+        chunk_id = str(context.metadata.get("chunk_id", "")).strip()
+        if chunk_id:
+            return f"chunk:{chunk_id}"
+        normalized = " ".join(context.content.split()).casefold()
+        return "content:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _merge_citations(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for citation in (item for group in groups for item in group):
+            clean = {
+                "source": str(citation.get("source", "")),
+                "chunk_id": str(citation.get("chunk_id", "")),
+                "page": citation.get("page", 0),
+                "heading_path": str(citation.get("heading_path", "")),
+            }
+            key = (clean["source"], clean["chunk_id"], str(clean["page"]))
+            if key not in seen and any(clean.values()):
                 seen.add(key)
-                unique.append(ctx)
-        return unique
+                merged.append(clean)
+        return merged
+
+    @staticmethod
+    def _citations_from_provenance(values: list[str]) -> list[dict[str, Any]]:
+        citations = []
+        for value in values or []:
+            source, separator, chunk_id = str(value).rpartition("::")
+            citations.append({"source": source if separator else str(value), "chunk_id": chunk_id if separator else ""})
+        return QAAgent._merge_citations(citations)
 
     # ── answer generation ────────────────────────────────────
 
@@ -421,13 +542,26 @@ class QAAgent:
         contexts: list[RetrievedContext],
         intent: QueryIntent,
     ) -> tuple[str, list[str]]:
-        context_text = "\n\n".join(
-            f"[来源 {i+1}: {c.source} | 类型: {c.retrieval_type} | 分数: {c.score:.2f}]\n{c.content}"
-            for i, c in enumerate(contexts)
-        )
+        evidence_blocks = []
+        for index, context in enumerate(contexts, start=1):
+            metadata = context.metadata
+            location = " | ".join(
+                item for item in (
+                    f"chunk: {metadata.get('chunk_id')}" if metadata.get("chunk_id") else "",
+                    f"page: {metadata.get('page')}" if metadata.get("page") else "",
+                    f"heading: {metadata.get('heading_path')}" if metadata.get("heading_path") else "",
+                )
+                if item
+            )
+            location_suffix = f" | {location}" if location else ""
+            evidence_blocks.append(
+                f"[{index}] 来源: {context.source} | 类型: {context.retrieval_type}"
+                f"{location_suffix}\n{context.content}"
+            )
+        context_text = "\n\n".join(evidence_blocks)
         reasoning_steps = [
-            f"向量检索: {sum(1 for c in contexts if c.retrieval_type == 'vector')} 条",
-            f"图谱检索: {sum(1 for c in contexts if c.retrieval_type == 'graph')} 条",
+            f"包含向量证据: {sum(1 for c in contexts if c.retrieval_type in {'vector', 'hybrid'})} 条",
+            f"包含图谱证据: {sum(1 for c in contexts if c.retrieval_type in {'graph', 'hybrid'})} 条",
         ]
         if self.reranker is not None and self.reranker.available:
             reasoning_steps.append("BGE-Reranker 精排完成")
@@ -443,7 +577,8 @@ class QAAgent:
 
     @staticmethod
     def _calc_confidence(contexts: list[RetrievedContext]) -> float:
+        """Return a bounded retrieval-support score, not an answer probability."""
         if not contexts:
             return 0.0
-        avg_score = sum(c.score for c in contexts) / len(contexts)
-        return min(avg_score, 1.0)
+        top_scores = sorted((max(0.0, min(c.score, 1.0)) for c in contexts), reverse=True)[:3]
+        return round(sum(top_scores) / len(top_scores), 4)

@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -286,8 +287,9 @@ class KnowledgeUpdateAgent:
         old_snapshot = self._load_snapshot(doc_id)
         new_chunks = await self.doc_parser.parse(change.file_path)
 
-        # 快照不存在 → 退化为全量重建 (与 create 相同)
+        # Legacy uploads or lost snapshots: remove old provenance before rebuilding.
         if not old_snapshot:
+            await self._handle_delete(change, result)
             await self._handle_create(change, result, chunks=new_chunks)
             return
 
@@ -418,14 +420,24 @@ class KnowledgeUpdateAgent:
             "contents": [c.content for c in chunks],
             "saved_at": time.time(),
         }
-        self._snapshots[doc_id] = snapshot
-
+        # Publish disk state atomically before updating the in-process cache.
+        # Persistence failures must fail the job, never report a successful commit.
+        os.makedirs(self._snapshot_dir, exist_ok=True)
+        temporary_path = None
         try:
-            os.makedirs(self._snapshot_dir, exist_ok=True)
-            with open(self._snapshot_path(doc_id), "w", encoding="utf-8") as f:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self._snapshot_dir,
+                suffix=".tmp", delete=False,
+            ) as f:
+                temporary_path = f.name
                 json.dump(snapshot, f, ensure_ascii=False)
-        except OSError as e:
-            logger.warning("snapshot persist failed: %s", e)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_path, self._snapshot_path(doc_id))
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+        self._snapshots[doc_id] = snapshot
 
     def _load_snapshot(self, doc_id: str) -> dict | None:
         if doc_id in self._snapshots:

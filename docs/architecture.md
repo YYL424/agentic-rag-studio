@@ -50,15 +50,15 @@ question
   → intent classification + query rewrite
   ├→ vector searches for rewritten queries
   └→ parameterized graph neighbor/path searches
-  → deduplicate + weighted merge
+  → full-content/chunk deduplicate + reciprocal-rank fusion (RRF)
   → optional cross-encoder rerank
   → relevance check / bounded Self-RAG retry
-  → answer + sources + confidence
+  → answer + traceable sources + retrieval_support
 ```
 
 向量与图检索通过 `asyncio.gather` 并发执行。图检索不再让 LLM 生成任意 Cypher，而是把抽取到的实体名传给参数化的邻居和最短路径查询。MCP 暴露的 Cypher 工具也经过单语句、只读关键字和允许起始子句校验。
 
-当前混排权重是启发式规则，置信度也不是统计校准概率。若要进入真实业务，需要在标注集上调权并做 calibration。
+向量相似度与图谱召回分数不在同一量纲，因此使用 RRF 按名次融合，并将同一 chunk 的多路 provenance 合并。API 的 `retrieval_support` 是 Top-3 召回分数摘要，不是答案正确概率；旧字段 `confidence` 仅为兼容保留。若要进入真实业务，仍需在标注集上做 answer correctness 与 calibration。
 
 ### 3.3 增量更新
 

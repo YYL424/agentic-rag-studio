@@ -118,6 +118,7 @@ def _build_mcp():
         return {
             "question": result.question,
             "answer": result.answer,
+            "retrieval_support": result.retrieval_support,
             "confidence": result.confidence,
             "intent": result.intent.value,
             "sources": [

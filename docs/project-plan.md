@@ -16,6 +16,9 @@
 - pytest、覆盖率门槛、Ruff、Python 3.11–3.13 CI。
 - 真实 Qdrant/Neo4j 写入、查询、删除集成测试和本地 API smoke 脚本。
 - 30 题示例 golden set 和可追溯评测元数据。
+- 可复现的 Agentic 消融评测（原始向量、查询改写、GraphRAG/RRF、Self-RAG）。
+- QA 工作流拆分为可 checkpoint 的意图、改写、检索、Self-RAG、生成节点。
+- 基于 RRF 的跨检索器融合、完整内容去重与 chunk/page/图谱 provenance 引用。
 
 ## P0：作品集发布前
 

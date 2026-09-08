@@ -197,7 +197,9 @@ class KnowledgeGraphService:
             [r IN relationships(path) | type(r)] AS relations,
             neighbor.name AS target,
             neighbor.type AS target_type,
-            neighbor.description AS target_desc
+            neighbor.description AS target_desc,
+            reduce(items = [], n IN nodes(path) | items + coalesce(n.provenance, [])) +
+            reduce(items = [], r IN relationships(path) | items + coalesce(r.provenance, [])) AS provenance
         LIMIT 50
         """
         return await self.execute_cypher(cypher, {"name": entity_name})
@@ -211,7 +213,9 @@ class KnowledgeGraphService:
         )
         RETURN
             [n IN nodes(path) | n.name] AS node_names,
-            [r IN relationships(path) | type(r)] AS rel_types
+            [r IN relationships(path) | type(r)] AS rel_types,
+            reduce(items = [], n IN nodes(path) | items + coalesce(n.provenance, [])) +
+            reduce(items = [], r IN relationships(path) | items + coalesce(r.provenance, [])) AS provenance
         LIMIT 3
         """
         return await self.execute_cypher(cypher, {"name_a": name_a, "name_b": name_b})

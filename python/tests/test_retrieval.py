@@ -229,14 +229,29 @@ def test_reranker_score_normalization():
 
 # ── QAAgent 混合排序 / Self-RAG ─────────────────────────────
 
-def test_hybrid_rerank_weighting():
-    """图谱结果权重 1.2 > 向量 1.0"""
+def test_reciprocal_rank_fusion_rewards_cross_retriever_evidence():
+    """同一 chunk 被向量和图谱共同召回时，应合并引用并排在单路结果前。"""
     from agents.qa_agent import QAAgent, RetrievedContext
 
-    v = RetrievedContext(content="向量内容", source="vs", score=0.9, retrieval_type="vector")
-    g = RetrievedContext(content="图谱内容", source="kg", score=0.8, retrieval_type="graph")
-    ranked = QAAgent._hybrid_rerank([v, g])
-    assert ranked[0].content == "图谱内容", f"图谱加权后应反超: {[ (r.content, r.score) for r in ranked ]}"
+    shared_vector = RetrievedContext(
+        content="共同证据", source="vector.md", score=0.91, retrieval_type="vector",
+        metadata={"chunk_id": "doc#1", "citations": [{"source": "vector.md", "chunk_id": "doc#1"}]},
+    )
+    shared_graph = RetrievedContext(
+        content="图谱中的同一证据", source="graph.md", score=1.0, retrieval_type="graph",
+        metadata={"chunk_id": "doc#1", "citations": [{"source": "graph.md", "chunk_id": "doc#1"}]},
+    )
+    vector_only = RetrievedContext(content="仅向量", source="vs", score=0.99, retrieval_type="vector")
+    graph_only = RetrievedContext(content="仅图谱", source="kg", score=1.0, retrieval_type="graph")
+
+    ranked = QAAgent._reciprocal_rank_fusion(
+        [[shared_vector, vector_only], [shared_graph, graph_only]],
+    )
+
+    assert ranked[0].metadata["chunk_id"] == "doc#1"
+    assert ranked[0].retrieval_type == "hybrid"
+    assert {item["source"] for item in ranked[0].metadata["citations"]} == {"vector.md", "graph.md"}
+    assert 0 <= ranked[0].score <= 1
 
 
 def test_dedup_by_content():
@@ -245,6 +260,16 @@ def test_dedup_by_content():
     c2 = RetrievedContext(content="相同内容前缀" * 10, source="b", score=0.8, retrieval_type="graph")
     result = QAAgent._dedup([c1, c2])
     assert len(result) == 1
+
+
+def test_dedup_uses_full_content_not_only_prefix():
+    """前 100 字相同但正文不同的证据不能被误删。"""
+    from agents.qa_agent import QAAgent, RetrievedContext
+
+    prefix = "相同前缀" * 30
+    first = RetrievedContext(content=prefix + "结论甲", source="a", score=0.9, retrieval_type="vector")
+    second = RetrievedContext(content=prefix + "结论乙", source="b", score=0.8, retrieval_type="graph")
+    assert len(QAAgent._dedup([first, second])) == 2
 
 
 @pytest.mark.asyncio
@@ -265,6 +290,7 @@ async def test_graph_retrieval_uses_parameterized_templates_only():
                 "target": "腾讯",
                 "target_type": "Organization",
                 "target_desc": "公司",
+                "provenance": ["staff.md::docA#chunk-1"],
             }]
 
         async def find_paths(self, name_a, name_b, max_hops):
@@ -284,6 +310,9 @@ async def test_graph_retrieval_uses_parameterized_templates_only():
     assert graph.neighbor_calls == [("张三", 2), ("腾讯", 2)]
     assert graph.path_calls == [("张三", "腾讯", 5)]
     assert any(c.metadata.get("strategy") == "shortest_path" for c in contexts)
+    neighbor = next(c for c in contexts if c.metadata.get("strategy") == "neighbors")
+    assert neighbor.source == "staff.md"
+    assert neighbor.metadata["citations"][0]["chunk_id"] == "docA#chunk-1"
 
 
 @pytest.mark.asyncio
@@ -410,3 +439,31 @@ async def test_self_rag_skips_when_relevance_high(monkeypatch):
 
     result = await agent.answer("问题")
     assert result.retrieval_rounds == 1
+
+
+@pytest.mark.asyncio
+async def test_self_rag_retries_an_empty_first_retrieval(monkeypatch):
+    """首次召回为空也要执行一次有界重检，不能直接生成无依据答案。"""
+    from agents.qa_agent import QAAgent, RetrievedContext
+    from config import settings
+
+    agent = object.__new__(QAAgent)
+    extra = RetrievedContext(content="补充证据", source="doc.md", score=0.8, retrieval_type="vector")
+
+    async def fake_rewrite(_question, _contexts):
+        return {"queries": ["补充查询"], "entities": [], "keywords": []}
+
+    async def fake_retrieve(_question, rewritten, top_k):
+        assert rewritten["queries"] == ["补充查询"]
+        assert top_k == settings.reranker_top_n
+        return [extra]
+
+    monkeypatch.setattr(agent, "_rewrite_query_self_rag", fake_rewrite)
+    monkeypatch.setattr(agent, "retrieve", fake_retrieve)
+    monkeypatch.setattr(settings, "enable_self_rag", True)
+    monkeypatch.setattr(settings, "self_rag_max_rounds", 2)
+
+    contexts, rounds, steps = await agent.refine_retrieval("问题", [], rounds=1)
+    assert contexts[0].content == "补充证据"
+    assert rounds == 2
+    assert "无结果" in " ".join(steps)

@@ -13,6 +13,7 @@ LangGraph 编排引擎 — 4 Agent 混合编排 (LangGraph 1.x 现代范式)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from enum import Enum
 from typing import Annotated, Any, TypedDict
@@ -29,7 +30,7 @@ from agents.knowledge_update_agent import (
     KnowledgeUpdateAgent,
     UpdateResult,
 )
-from agents.qa_agent import QAAgent, QAResult
+from agents.qa_agent import QAAgent, QAResult, QueryIntent, RetrievedContext
 from config import settings
 from services.entity_resolver import EntityResolver
 from services.knowledge_graph import KnowledgeGraphService
@@ -62,6 +63,11 @@ class IngestState(TypedDict, total=False):
 class QAState(TypedDict, total=False):
     """问答流程状态"""
     question: str
+    intent: str
+    rewritten: dict[str, list[str]]
+    contexts: list[dict[str, Any]]
+    retrieval_rounds: int
+    reasoning_steps: list[str]
     result: QAResult | None
     messages: Annotated[list, add_messages]
 
@@ -139,6 +145,7 @@ def build_knowledge_graph_workflow(
         "ingest": _build_ingest_graph(
             doc_parser, extractor, vector_store, knowledge_graph,
             checkpointer=checkpointer, enable_hitl=enable_hitl,
+            update_agent=update_agent,
         ),
         "qa": _build_qa_graph(qa_agent, checkpointer=checkpointer),
         "update": _build_update_graph(update_agent, checkpointer=checkpointer),
@@ -154,7 +161,20 @@ def _build_ingest_graph(
     knowledge_graph: KnowledgeGraphService | None,
     checkpointer: Any,
     enable_hitl: bool,
+    update_agent: KnowledgeUpdateAgent | None = None,
 ) -> Any:
+
+    update_agent = update_agent or KnowledgeUpdateAgent()
+
+    async def commit_snapshots(state: IngestState) -> dict:
+        # Commit the diff baseline only after BOTH stores succeeded and review passed.
+        if state.get("ingest_approved") is False:
+            return {}
+        chunks = state.get("chunks", [])
+        for file_path in state.get("file_paths", []):
+            document_chunks = [c for c in chunks if c.metadata.get("source") == file_path]
+            await asyncio.to_thread(update_agent._save_snapshot, file_path, document_chunks)
+        return {}
 
     async def parse_documents(state: IngestState) -> dict:
         file_paths = state.get("file_paths", [])
@@ -243,6 +263,7 @@ def _build_ingest_graph(
     graph.add_node("extract", extract_knowledge)
     graph.add_node("store_vectors", store_vectors)
     graph.add_node("store_graph", store_graph)
+    graph.add_node("commit_snapshots", commit_snapshots)
 
     graph.set_entry_point("parse")
     graph.add_edge("parse", "extract")
@@ -257,8 +278,8 @@ def _build_ingest_graph(
         graph.add_edge("extract", "store_vectors")
         graph.add_edge("extract", "store_graph")
 
-    graph.add_edge("store_vectors", END)
-    graph.add_edge("store_graph", END)
+    graph.add_edge(["store_vectors", "store_graph"], "commit_snapshots")
+    graph.add_edge("commit_snapshots", END)
 
     return graph.compile(checkpointer=checkpointer)
 
@@ -267,15 +288,55 @@ def _build_ingest_graph(
 
 def _build_qa_graph(qa_agent: QAAgent, checkpointer: Any) -> Any:
 
-    async def process_question(state: QAState) -> dict:
+    async def classify_intent(state: QAState) -> dict:
+        intent = await qa_agent._classify_intent(state.get("question", ""))
+        return {"intent": intent.value}
+
+    async def rewrite_query(state: QAState) -> dict:
+        rewritten = await qa_agent._rewrite_query(state.get("question", ""))
+        return {"rewritten": rewritten}
+
+    async def retrieve_contexts(state: QAState) -> dict:
         question = state.get("question", "")
-        result = await qa_agent.answer(question)
+        contexts = await qa_agent.retrieve(question, state.get("rewritten"), top_k=8)
+        return {
+            "contexts": [context.as_dict() for context in contexts],
+            "retrieval_rounds": 1,
+        }
+
+    async def self_rag(state: QAState) -> dict:
+        contexts = [RetrievedContext.from_dict(value) for value in state.get("contexts", [])]
+        refined, rounds, reasoning = await qa_agent.refine_retrieval(
+            state.get("question", ""), contexts, rounds=state.get("retrieval_rounds", 1),
+        )
+        return {
+            "contexts": [context.as_dict() for context in refined],
+            "retrieval_rounds": rounds,
+            "reasoning_steps": reasoning,
+        }
+
+    async def generate_answer(state: QAState) -> dict:
+        question = state.get("question", "")
+        intent = QueryIntent(state.get("intent", QueryIntent.FACTOID.value))
+        contexts = [RetrievedContext.from_dict(value) for value in state.get("contexts", [])]
+        reasoning = [f"识别问题意图: {intent.value}", *state.get("reasoning_steps", [])]
+        result = await qa_agent.build_result(
+            question, intent, contexts, state.get("retrieval_rounds", 1), reasoning,
+        )
         return {"result": result}
 
     graph = StateGraph(QAState)
-    graph.add_node("answer", process_question)
-    graph.set_entry_point("answer")
-    graph.add_edge("answer", END)
+    graph.add_node("classify_intent", classify_intent)
+    graph.add_node("rewrite_query", rewrite_query)
+    graph.add_node("retrieve", retrieve_contexts)
+    graph.add_node("self_rag", self_rag)
+    graph.add_node("generate_answer", generate_answer)
+    graph.set_entry_point("classify_intent")
+    graph.add_edge("classify_intent", "rewrite_query")
+    graph.add_edge("rewrite_query", "retrieve")
+    graph.add_edge("retrieve", "self_rag")
+    graph.add_edge("self_rag", "generate_answer")
+    graph.add_edge("generate_answer", END)
 
     return graph.compile(checkpointer=checkpointer)
 

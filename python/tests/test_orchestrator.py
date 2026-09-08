@@ -24,12 +24,19 @@ from agents.knowledge_extract_agent import (  # noqa: E402
 )
 from orchestrator.graph import (  # noqa: E402
     _build_ingest_graph,
+    _build_qa_graph,
     create_checkpointer,
 )
 from schema import DocType, DocumentChunk  # noqa: E402
 
 
 # ── fakes ────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def isolated_uploads(tmp_path, monkeypatch):
+    from config import settings
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+
 
 class FakeDocParser:
     async def parse_batch(self, file_paths):
@@ -94,6 +101,56 @@ def test_create_checkpointer_invalid_backend_falls_back():
     """无效后端配置自动降级, 不抛异常"""
     cp = create_checkpointer(backend="nonexistent_backend")
     assert cp is not None
+
+
+@pytest.mark.asyncio
+async def test_qa_graph_resumes_from_failed_generation_without_retrieving_again():
+    """生成阶段失败后使用同一 thread 恢复，不应重复意图、改写和检索。"""
+    from agents.qa_agent import QAResult, QueryIntent, RetrievedContext
+
+    class FakeQAAgent:
+        def __init__(self):
+            self.calls = {name: 0 for name in ("classify", "rewrite", "retrieve", "refine", "generate")}
+
+        async def _classify_intent(self, _question):
+            self.calls["classify"] += 1
+            return QueryIntent.FACTOID
+
+        async def _rewrite_query(self, question):
+            self.calls["rewrite"] += 1
+            return {"queries": [question], "entities": [], "keywords": []}
+
+        async def retrieve(self, _question, _rewritten, top_k):
+            self.calls["retrieve"] += 1
+            assert top_k == 8
+            return [RetrievedContext("证据", "doc.md", 0.8, "vector")]
+
+        async def refine_retrieval(self, _question, contexts, *, rounds):
+            self.calls["refine"] += 1
+            return contexts, rounds, ["检索完成"]
+
+        async def build_result(self, question, intent, contexts, rounds, reasoning):
+            self.calls["generate"] += 1
+            if self.calls["generate"] == 1:
+                raise RuntimeError("temporary generation failure")
+            return QAResult(question, "答案", contexts, intent, 0.8, reasoning, rounds)
+
+    agent = FakeQAAgent()
+    graph = _build_qa_graph(agent, checkpointer=create_checkpointer("memory"))
+    config = {"configurable": {"thread_id": "qa-resume-test"}}
+
+    with pytest.raises(RuntimeError, match="temporary generation failure"):
+        await graph.ainvoke({"question": "张三是谁？"}, config=config)
+
+    final = await graph.ainvoke(None, config=config)
+    assert final["result"].answer == "答案"
+    assert agent.calls == {
+        "classify": 1,
+        "rewrite": 1,
+        "retrieve": 1,
+        "refine": 1,
+        "generate": 2,
+    }
 
 
 # ── ingest graph (no HITL) ───────────────────────────────────

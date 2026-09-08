@@ -163,6 +163,7 @@ def test_sse_stream_output(client):
     assert [t["content"] for t in tokens] == ["流", "式", "输", "出", "！"], f"token 顺序错误: {tokens}"
     assert done_seen, "应以 [DONE] 结束"
     assert finals, "应有 final 元信息事件"
+    assert finals[0]["retrieval_support"] == 0.85
     assert finals[0]["confidence"] == 0.85
 
 
@@ -175,7 +176,36 @@ def test_ask_endpoint_sync(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["answer"] == "流式输出！"
+    assert data["retrieval_support"] == 0.85
     assert data["retrieval_rounds"] == 1
+
+
+def test_source_payload_exposes_traceable_citations():
+    from agents.qa_agent import RetrievedContext
+    from api.main import _source_payload
+
+    context = RetrievedContext(
+        content="可追溯证据",
+        source="manual.pdf",
+        score=0.812345,
+        retrieval_type="hybrid",
+        metadata={
+            "chunk_id": "doc-1#chunk-2",
+            "page": 7,
+            "heading_path": "部署/检查",
+            "citations": [
+                {"source": "manual.pdf", "chunk_id": "doc-1#chunk-2", "page": 7},
+                {"source": "knowledge_graph", "chunk_id": "doc-1#chunk-2"},
+            ],
+        },
+    )
+
+    payload = _source_payload(context)
+    assert payload["score"] == 0.8123
+    assert payload["chunk_id"] == "doc-1#chunk-2"
+    assert payload["page"] == 7
+    assert payload["heading_path"] == "部署/检查"
+    assert len(payload["citations"]) == 2
 
 
 # ── HITL 上传 + 审核流程 ─────────────────────────────────────

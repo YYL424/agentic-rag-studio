@@ -118,11 +118,33 @@ class QuestionRequest(BaseModel):
 class QuestionResponse(BaseModel):
     question: str
     answer: str
-    confidence: float
+    retrieval_support: float = Field(description="检索证据支持度；不是答案正确概率")
+    confidence: float = Field(description="兼容旧客户端，等同 retrieval_support", deprecated=True)
     intent: str
     sources: list[dict[str, Any]]
     reasoning_steps: list[str]
     retrieval_rounds: int
+
+
+def _source_payload(context: Any) -> dict[str, Any]:
+    """Expose bounded evidence metadata without leaking backend-specific objects."""
+    metadata = dict(getattr(context, "metadata", {}) or {})
+    citations = metadata.get("citations") or [{
+        "source": getattr(context, "source", ""),
+        "chunk_id": metadata.get("chunk_id", ""),
+        "page": metadata.get("page", 0),
+        "heading_path": metadata.get("heading_path", ""),
+    }]
+    return {
+        "content": getattr(context, "content", "")[:500],
+        "source": getattr(context, "source", ""),
+        "score": round(float(getattr(context, "score", 0.0)), 4),
+        "type": getattr(context, "retrieval_type", ""),
+        "chunk_id": metadata.get("chunk_id", ""),
+        "page": metadata.get("page", 0),
+        "heading_path": metadata.get("heading_path", ""),
+        "citations": citations,
+    }
 
 
 class IngestResponse(BaseModel):
@@ -441,12 +463,10 @@ async def ask_question(req: QuestionRequest):
     return QuestionResponse(
         question=qa_result.question,
         answer=qa_result.answer,
+        retrieval_support=qa_result.retrieval_support,
         confidence=qa_result.confidence,
         intent=qa_result.intent.value,
-        sources=[
-            {"content": c.content[:200], "source": c.source, "score": c.score, "type": c.retrieval_type}
-            for c in qa_result.contexts
-        ],
+        sources=[_source_payload(context) for context in qa_result.contexts],
         reasoning_steps=qa_result.reasoning_steps,
         retrieval_rounds=qa_result.retrieval_rounds,
     )
@@ -487,13 +507,11 @@ async def ask_stream(req: QuestionRequest):
                 if qa_result:
                     final_payload = {
                         "type": "final",
+                        "retrieval_support": qa_result.retrieval_support,
                         "confidence": qa_result.confidence,
                         "intent": qa_result.intent.value,
                         "retrieval_rounds": qa_result.retrieval_rounds,
-                        "sources": [
-                            {"source": c.source, "score": round(c.score, 4), "type": c.retrieval_type}
-                            for c in qa_result.contexts
-                        ],
+                        "sources": [_source_payload(context) for context in qa_result.contexts],
                         "reasoning_steps": qa_result.reasoning_steps,
                     }
                     yield f"data: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
@@ -940,7 +958,7 @@ async function ask() {
             bubbleDiv.querySelector('.cursor').remove();
             const meta = document.createElement('div');
             meta.className = 'meta';
-            meta.textContent = '🎯 置信度: ' + ((evt.confidence||0)*100).toFixed(0) + '% | 意图: ' + (evt.intent||'') + rounds + (sources?' | 来源: '+sources:'');
+            meta.textContent = '🔎 检索支持度: ' + ((evt.retrieval_support ?? evt.confidence ?? 0)*100).toFixed(0) + '% | 意图: ' + (evt.intent||'') + rounds + (sources?' | 来源: '+sources:'');
             bubbleDiv.appendChild(meta);
           }
         } catch(e) {}
@@ -966,7 +984,7 @@ async function fallbackAsk(q, btn) {
     const data = await res.json();
     if (res.ok) {
       const sources = data.sources?.map(s => s.source).join(', ') || '';
-      addMsg('agent', data.answer, '🎯 置信度: ' + (data.confidence*100).toFixed(0) + '% | 意图: ' + data.intent + (sources?' | 来源: '+sources:''));
+      addMsg('agent', data.answer, '🔎 检索支持度: ' + ((data.retrieval_support ?? data.confidence ?? 0)*100).toFixed(0) + '% | 意图: ' + data.intent + (sources?' | 来源: '+sources:''));
     } else {
       addMsg('agent', '❌ 问答失败，请确认已上传文档');
     }

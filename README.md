@@ -137,6 +137,12 @@ curl -X POST http://localhost:8080/api/qa/ask \
 `already_exists`，不会重复写入；失败或驳回的记录会在补偿清理旧双写后允许重试。删除待审核文档还会终止对应
 LangGraph checkpoint，避免旧 `thread_id` 再次恢复写入。
 
+入库在向量和图谱两个分支均成功后才提交增量快照；待审核、驳回或写入失败不会提交新基线。
+快照以临时文件加原子替换保存，磁盘写入失败会报告任务失败。成功上传后，即使重启 API，
+首次修改仍可读取持久快照并仅重处理变化 chunk。旧版本文档缺失快照时，会先按文档清理
+向量和图谱来源，再全量重建；清理失败会阻止新版本写入。
+这不等同于跨库事务或任务自动恢复：双库部分失败仍需重试补偿，HITL 重启恢复仍依赖持久化 checkpointer。
+
 生产式部署应设置 `API_KEY`，并在上传、审核和更新请求中携带 `X-API-Key`。当前 Key 只保护写接口，读接口仍适合置于网关后。
 
 ## API 概览
@@ -192,6 +198,17 @@ python benchmarks/baseline_vs_modern.py \
 ```
 
 报告包含 Recall@K、MRR、NDCG@K、P50/P95，以及配置、运行环境、数据集与文档 SHA-256。生成结果默认不提交，避免把不同机器或模型的结果混为项目结论。简历中的效果指标应替换为你在目标数据集上实际复测的数字。
+
+在同一批评测文档已经入库后，可进一步运行 Agentic 检索消融实验，分别衡量查询改写、GraphRAG/RRF 与 Self-RAG 的增量价值：
+
+```bash
+cd python
+python benchmarks/agentic_ablation.py \
+  --dataset benchmarks/golden_set.jsonl \
+  --top-k 1,3,5
+```
+
+该报告只评估“召回证据”，不等同于答案正确率；查询改写和 Self-RAG 会调用 `.env` 中配置的 LLM。输出包含各变量的 Recall/MRR/NDCG、P95 延迟、平均检索轮次及数据集 SHA-256。
 
 ## 项目结构
 

@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from benchmarks.eval_retrieval import EvalSample, evaluate, load_dataset
+from benchmarks.agentic_ablation import evaluate_variants
 
 
 @pytest.mark.asyncio
@@ -56,3 +57,22 @@ def test_dataset_loader_rejects_empty_and_duplicate_rows(tmp_path):
     ]
     path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows), encoding="utf-8")
     assert load_dataset(path) == [EvalSample(question="Q1", golden_fragment="A1", source_doc="a.md")]
+
+
+@pytest.mark.asyncio
+async def test_ablation_uses_same_dataset_and_excludes_warmup_rounds():
+    from agents.qa_agent import RetrievedContext
+
+    calls = 0
+
+    async def variant(_question: str, _top_k: int):
+        nonlocal calls
+        calls += 1
+        return [RetrievedContext("正确片段", "right.md", 0.8, "vector")], 2
+
+    dataset = [EvalSample("问题", "正确片段", "right.md")]
+    results = await evaluate_variants({"self_rag": variant}, dataset, [1], warmup_queries=1)
+
+    assert calls == 2  # 一次 warm-up + 一次计入指标的查询
+    assert results["self_rag"].retrieval.mrr == 1
+    assert results["self_rag"].average_retrieval_rounds == 2

@@ -74,6 +74,6 @@ AND basename(result.source) == basename(sample.source_doc)
 
 - 用 job/outbox/补偿重放解决跨库最终一致性。
 - 用租户作用域实体 ID 代替全局按名称合并。
-- 为检索分数做离线调权与 confidence calibration。
+- 在人工标注集上补充答案正确性评测，并对 retrieval support 做 calibration。
 - 对 Kafka offset、重复事件和死信队列做故障注入。
 - 在真实语料上建立版本化评测集和持续回归。
