@@ -229,6 +229,43 @@ def test_reranker_score_normalization():
 
 # ── QAAgent 混合排序 / Self-RAG ─────────────────────────────
 
+@pytest.mark.asyncio
+async def test_direct_answer_preprocessing_runs_concurrently(monkeypatch):
+    """MCP/direct QA path benefits from the same independent model calls."""
+    import asyncio
+    from agents.qa_agent import QAAgent, QueryIntent
+
+    agent = object.__new__(QAAgent)
+    classify_started = asyncio.Event()
+    rewrite_started = asyncio.Event()
+
+    async def classify(_question):
+        classify_started.set()
+        await asyncio.wait_for(rewrite_started.wait(), timeout=0.5)
+        return QueryIntent.FACTOID
+
+    async def rewrite(question):
+        rewrite_started.set()
+        await asyncio.wait_for(classify_started.wait(), timeout=0.5)
+        return {"queries": [question], "entities": [], "keywords": []}
+
+    async def retrieve(_question, _rewritten, top_k):
+        assert top_k == 8
+        return []
+
+    async def refine(_question, contexts, *, rounds):
+        return contexts, rounds, []
+
+    async def build(_question, intent, _contexts, _rounds, _reasoning):
+        return intent
+
+    monkeypatch.setattr(agent, "_classify_intent", classify)
+    monkeypatch.setattr(agent, "_rewrite_query", rewrite)
+    monkeypatch.setattr(agent, "retrieve", retrieve)
+    monkeypatch.setattr(agent, "refine_retrieval", refine)
+    monkeypatch.setattr(agent, "build_result", build)
+    assert await asyncio.wait_for(agent.answer("问题"), timeout=1) == QueryIntent.FACTOID
+
 def test_reciprocal_rank_fusion_rewards_cross_retriever_evidence():
     """同一 chunk 被向量和图谱共同召回时，应合并引用并排在单路结果前。"""
     from agents.qa_agent import QAAgent, RetrievedContext

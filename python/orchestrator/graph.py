@@ -18,7 +18,7 @@ import logging
 from enum import Enum
 from typing import Annotated, Any, TypedDict
 
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
 
@@ -286,7 +286,12 @@ def _build_ingest_graph(
 
 # ── QA Pipeline ──────────────────────────────────────────────
 
-def _build_qa_graph(qa_agent: QAAgent, checkpointer: Any) -> Any:
+def _build_qa_graph(
+    qa_agent: QAAgent,
+    checkpointer: Any,
+    *,
+    parallel_preprocessing: bool = True,
+) -> Any:
 
     async def classify_intent(state: QAState) -> dict:
         intent = await qa_agent._classify_intent(state.get("question", ""))
@@ -331,9 +336,17 @@ def _build_qa_graph(qa_agent: QAAgent, checkpointer: Any) -> Any:
     graph.add_node("retrieve", retrieve_contexts)
     graph.add_node("self_rag", self_rag)
     graph.add_node("generate_answer", generate_answer)
-    graph.set_entry_point("classify_intent")
-    graph.add_edge("classify_intent", "rewrite_query")
-    graph.add_edge("rewrite_query", "retrieve")
+    if parallel_preprocessing:
+        # Both nodes read only `question` and write distinct state keys.
+        # The join waits for both results before retrieval starts.
+        graph.add_edge(START, "classify_intent")
+        graph.add_edge(START, "rewrite_query")
+        graph.add_edge(["classify_intent", "rewrite_query"], "retrieve")
+    else:
+        # Retained as an internal reference path for the repeatable latency benchmark.
+        graph.add_edge(START, "classify_intent")
+        graph.add_edge("classify_intent", "rewrite_query")
+        graph.add_edge("rewrite_query", "retrieve")
     graph.add_edge("retrieve", "self_rag")
     graph.add_edge("self_rag", "generate_answer")
     graph.add_edge("generate_answer", END)

@@ -126,25 +126,58 @@ class QuestionResponse(BaseModel):
     retrieval_rounds: int
 
 
-def _source_payload(context: Any) -> dict[str, Any]:
+def _source_payload(
+    context: Any,
+    *,
+    index: int = 1,
+    source_names: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Expose bounded evidence metadata without leaking backend-specific objects."""
+    source_names = source_names or {}
     metadata = dict(getattr(context, "metadata", {}) or {})
+    raw_source = str(getattr(context, "source", ""))
+    file_id = Path(raw_source).name
     citations = metadata.get("citations") or [{
-        "source": getattr(context, "source", ""),
+        "source": raw_source,
         "chunk_id": metadata.get("chunk_id", ""),
         "page": metadata.get("page", 0),
         "heading_path": metadata.get("heading_path", ""),
     }]
+    display_citations = []
+    for citation in citations:
+        citation_source = str(citation.get("source", ""))
+        citation_file_id = Path(citation_source).name
+        display_citations.append({
+            **citation,
+            "source": source_names.get(citation_file_id, citation_source),
+        })
     return {
+        "index": index,
         "content": getattr(context, "content", "")[:500],
-        "source": getattr(context, "source", ""),
+        "source": source_names.get(file_id, raw_source),
         "score": round(float(getattr(context, "score", 0.0)), 4),
         "type": getattr(context, "retrieval_type", ""),
         "chunk_id": metadata.get("chunk_id", ""),
         "page": metadata.get("page", 0),
         "heading_path": metadata.get("heading_path", ""),
-        "citations": citations,
+        "citations": display_citations,
     }
+
+
+async def _sources_payload(contexts: list[Any]) -> list[dict[str, Any]]:
+    """Resolve managed upload IDs to human-readable filenames once per answer."""
+    if not contexts:
+        return []
+    documents = await asyncio.to_thread(_get_document_registry().list_documents)
+    source_names = {
+        record["file_id"]: record["original_name"]
+        for record in documents
+        if record["status"] == "success"
+    }
+    return [
+        _source_payload(context, index=index, source_names=source_names)
+        for index, context in enumerate(contexts, start=1)
+    ]
 
 
 class IngestResponse(BaseModel):
@@ -466,7 +499,7 @@ async def ask_question(req: QuestionRequest):
         retrieval_support=qa_result.retrieval_support,
         confidence=qa_result.confidence,
         intent=qa_result.intent.value,
-        sources=[_source_payload(context) for context in qa_result.contexts],
+        sources=await _sources_payload(qa_result.contexts),
         reasoning_steps=qa_result.reasoning_steps,
         retrieval_rounds=qa_result.retrieval_rounds,
     )
@@ -511,7 +544,7 @@ async def ask_stream(req: QuestionRequest):
                         "confidence": qa_result.confidence,
                         "intent": qa_result.intent.value,
                         "retrieval_rounds": qa_result.retrieval_rounds,
-                        "sources": [_source_payload(context) for context in qa_result.contexts],
+                        "sources": await _sources_payload(qa_result.contexts),
                         "reasoning_steps": qa_result.reasoning_steps,
                     }
                     yield f"data: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
@@ -953,7 +986,7 @@ async function ask() {
             contentEl.textContent = answerText;
             area.scrollTop = area.scrollHeight;
           } else if (evt.type === 'final') {
-            const sources = (evt.sources||[]).map(s => s.source).join(', ') || '';
+            const sources = (evt.sources||[]).map(s => '[' + s.index + '] ' + s.source).join(', ') || '';
             const rounds = evt.retrieval_rounds > 1 ? ' | 🔁 重检 ' + evt.retrieval_rounds + ' 轮' : '';
             bubbleDiv.querySelector('.cursor').remove();
             const meta = document.createElement('div');
@@ -983,7 +1016,7 @@ async function fallbackAsk(q, btn) {
     });
     const data = await res.json();
     if (res.ok) {
-      const sources = data.sources?.map(s => s.source).join(', ') || '';
+      const sources = data.sources?.map(s => '[' + s.index + '] ' + s.source).join(', ') || '';
       addMsg('agent', data.answer, '🔎 检索支持度: ' + ((data.retrieval_support ?? data.confidence ?? 0)*100).toFixed(0) + '% | 意图: ' + data.intent + (sources?' | 来源: '+sources:''));
     } else {
       addMsg('agent', '❌ 问答失败，请确认已上传文档');

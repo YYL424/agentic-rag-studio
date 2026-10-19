@@ -171,8 +171,12 @@ class QAAgent:
 
     async def answer(self, question: str) -> QAResult:
         """完整问答流程 (Self-RAG + Reranker)"""
-        intent = await self._classify_intent(question)
-        rewritten = await self._rewrite_query(question)
+        # Both calls depend only on the question. Starting them together removes
+        # one model round-trip from the critical path without changing call count.
+        intent, rewritten = await asyncio.gather(
+            self._classify_intent(question),
+            self._rewrite_query(question),
+        )
         all_contexts = await self.retrieve(question, rewritten, top_k=8)
         all_contexts, rounds, reasoning_steps = await self.refine_retrieval(
             question, all_contexts, rounds=1,
@@ -237,7 +241,7 @@ class QAAgent:
         rewritten: dict | None = None,
         top_k: int = 8,
     ) -> list[RetrievedContext]:
-        """混合检索入口: 向量 + 图谱 → 加权粗排 → BGE 精排"""
+        """混合检索入口: 向量 + 图谱 → RRF 融合 → BGE 精排"""
         rewritten = rewritten or await self._rewrite_query(question)
 
         # 向量与图谱分支相互独立，并行执行以降低端到端延迟。

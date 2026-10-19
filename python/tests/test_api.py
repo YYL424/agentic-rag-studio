@@ -200,12 +200,34 @@ def test_source_payload_exposes_traceable_citations():
         },
     )
 
-    payload = _source_payload(context)
+    payload = _source_payload(context, index=2)
+    assert payload["index"] == 2
     assert payload["score"] == 0.8123
     assert payload["chunk_id"] == "doc-1#chunk-2"
     assert payload["page"] == 7
     assert payload["heading_path"] == "部署/检查"
     assert len(payload["citations"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_sources_payload_resolves_managed_upload_names(monkeypatch):
+    from agents.qa_agent import RetrievedContext
+    import api.main as api_mod
+
+    class FakeRegistry:
+        def list_documents(self):
+            return [{"file_id": "abc123.md", "original_name": "公司制度.md", "status": "success"}]
+
+    monkeypatch.setattr(api_mod, "_get_document_registry", lambda: FakeRegistry())
+    context = RetrievedContext(
+        content="证据", source="/app/uploads/abc123.md", score=0.8,
+        retrieval_type="vector",
+        metadata={"citations": [{"source": "/app/uploads/abc123.md", "chunk_id": "abc123#chunk-1"}]},
+    )
+    sources = await api_mod._sources_payload([context])
+    assert sources[0]["index"] == 1
+    assert sources[0]["source"] == "公司制度.md"
+    assert sources[0]["citations"][0]["source"] == "公司制度.md"
 
 
 # ── HITL 上传 + 审核流程 ─────────────────────────────────────

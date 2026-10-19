@@ -1,0 +1,51 @@
+{
+  "scope": "offline_simulated_io_workflow_latency",
+  "generated_at_utc": "2026-10-19T03:28:41.896387+00:00",
+  "dataset": "benchmarks\\golden_set.jsonl",
+  "dataset_sha256": "f507da070b05d09f247d36c581920f46688cf0cd7e14625ead7797a297f1da54",
+  "questions": 30,
+  "runs": 3,
+  "warmup_queries_per_variant": 2,
+  "simulated_stage_delays_ms": {
+    "classify_ms": 40,
+    "rewrite_ms": 60,
+    "retrieve_ms": 15,
+    "self_rag_ms": 8,
+    "generate_ms": 25
+  },
+  "python": "3.12.14",
+  "os": "Windows",
+  "measurements": {
+    "sequential": {
+      "mean_ms": 182.293,
+      "p50_ms": 185.728,
+      "p95_ms": 187.383
+    },
+    "parallel": {
+      "mean_ms": 122.693,
+      "p50_ms": 123.984,
+      "p95_ms": 138.879
+    },
+    "p50_saved_ms": 61.744,
+    "p50_reduction_pct": 33.24,
+    "p95_saved_ms": 48.504,
+    "output_parity_checks": 90,
+    "calls_per_workflow": {
+      "sequential": {
+        "classify": 92,
+        "rewrite": 92,
+        "retrieve": 92,
+        "self_rag": 92,
+        "generate": 92
+      },
+      "parallel": {
+        "classify": 92,
+        "rewrite": 92,
+        "retrieve": 92,
+        "self_rag": 92,
+        "generate": 92
+      }
+    }
+  },
+  "limitations": "Uses asyncio.sleep and a deterministic fake agent. No paid LLM, real database, answer accuracy, token savings, or production latency is measured."
+}

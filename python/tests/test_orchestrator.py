@@ -7,6 +7,7 @@ LangGraph 编排层测试 — Checkpointer / HITL interrupt / 结构化输出 / 
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -101,6 +102,45 @@ def test_create_checkpointer_invalid_backend_falls_back():
     """无效后端配置自动降级, 不抛异常"""
     cp = create_checkpointer(backend="nonexistent_backend")
     assert cp is not None
+
+
+@pytest.mark.asyncio
+async def test_qa_graph_preprocessing_runs_concurrently_and_joins_before_retrieval():
+    """Both independent model calls must start before either can finish."""
+    from agents.qa_agent import QAResult, QueryIntent, RetrievedContext
+
+    classify_started = asyncio.Event()
+    rewrite_started = asyncio.Event()
+
+    class FakeQAAgent:
+        async def _classify_intent(self, _question):
+            classify_started.set()
+            await asyncio.wait_for(rewrite_started.wait(), timeout=0.5)
+            return QueryIntent.FACTOID
+
+        async def _rewrite_query(self, question):
+            rewrite_started.set()
+            await asyncio.wait_for(classify_started.wait(), timeout=0.5)
+            return {"queries": [question], "entities": [], "keywords": []}
+
+        async def retrieve(self, question, rewritten, top_k):
+            assert classify_started.is_set() and rewrite_started.is_set()
+            assert rewritten["queries"] == [question] and top_k == 8
+            return [RetrievedContext("证据", "doc.md", 0.8, "vector")]
+
+        async def refine_retrieval(self, _question, contexts, *, rounds):
+            return contexts, rounds, []
+
+        async def build_result(self, question, intent, contexts, rounds, reasoning):
+            return QAResult(question, "答案", contexts, intent, 0.8, reasoning, rounds)
+
+    graph = _build_qa_graph(FakeQAAgent(), checkpointer=create_checkpointer("memory"))
+    final = await asyncio.wait_for(
+        graph.ainvoke({"question": "问题"}, config={"configurable": {"thread_id": "qa-parallel-test"}}),
+        timeout=1,
+    )
+    assert final["result"].answer == "答案"
+    assert final["result"].intent == QueryIntent.FACTOID
 
 
 @pytest.mark.asyncio

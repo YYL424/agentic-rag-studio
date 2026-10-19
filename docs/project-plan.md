@@ -19,6 +19,7 @@
 - 可复现的 Agentic 消融评测（原始向量、查询改写、GraphRAG/RRF、Self-RAG）。
 - QA 工作流拆分为可 checkpoint 的意图、改写、检索、Self-RAG、生成节点。
 - 基于 RRF 的跨检索器融合、完整内容去重与 chunk/page/图谱 provenance 引用。
+- 意图识别与查询改写并行，受控延迟实验和来源映射修复见 `docs/优化分析与实测.md`。
 
 ## P0：作品集发布前
 

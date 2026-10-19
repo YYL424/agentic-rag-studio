@@ -56,6 +56,7 @@ async def evaluate_variants(
     top_k_list: list[int] | tuple[int, ...],
     *,
     warmup_queries: int = 2,
+    source_aliases: dict[str, str] | None = None,
 ) -> dict[str, VariantResult]:
     """Evaluate all variants under the same metric and warm-up protocol."""
     results: dict[str, VariantResult] = {}
@@ -71,7 +72,9 @@ async def evaluate_variants(
                 (
                     {
                         "content": context.content,
-                        "source": context.source,
+                        "source": (source_aliases or {}).get(
+                            Path(context.source).name, context.source,
+                        ),
                         "metadata": context.metadata,
                     },
                     context.score,
@@ -170,6 +173,40 @@ def _dataset_sha256(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def build_source_aliases(documents: list[dict], dataset: list[EvalSample]) -> dict[str, str]:
+    """Map managed upload IDs back to the original names used by the golden set."""
+    required = {Path(sample.source_doc).name for sample in dataset if sample.source_doc}
+    by_name: dict[str, list[str]] = {}
+    for document in documents:
+        if document.get("status") != "success":
+            continue
+        name = Path(str(document.get("original_name", ""))).name
+        file_id = Path(str(document.get("file_id", ""))).name
+        if name and file_id:
+            by_name.setdefault(name, []).append(file_id)
+
+    missing = sorted(required - by_name.keys())
+    ambiguous = sorted(name for name in required if len(by_name.get(name, [])) > 1)
+    if missing or ambiguous:
+        raise ValueError(
+            f"评测文档与上传目录不一致；缺失: {missing}；同名多份: {ambiguous}。"
+            "请先上传数据集对应文档并清理同名重复版本。"
+        )
+    return {by_name[name][0]: name for name in required}
+
+
+async def _load_source_aliases(api_url: str, dataset: list[EvalSample]) -> dict[str, str]:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.get(api_url.rstrip("/") + "/api/documents")
+        response.raise_for_status()
+    documents = response.json()
+    if not isinstance(documents, list):
+        raise ValueError("/api/documents did not return a list")
+    return build_source_aliases(documents, dataset)
+
+
 def _print_results(results: dict[str, VariantResult], top_k: list[int]) -> None:
     columns = ["variant", "MRR", *(f"R@{k}" for k in top_k), "P95(ms)", "avg rounds"]
     print("\n" + " | ".join(columns))
@@ -193,6 +230,10 @@ async def _run(args: argparse.Namespace) -> None:
     dataset = load_dataset(args.dataset)
     if not dataset:
         raise SystemExit("评测数据集为空")
+
+    source_aliases = await _load_source_aliases(args.api_url, dataset) if args.api_url else {}
+    if not args.api_url and any(sample.source_doc for sample in dataset):
+        print("[warn] 未提供 --api-url；如通过网页/API 上传，随机文件 ID 会使来源匹配失败。")
 
     vector_store = VectorStoreService()
     needs_graph = any(name.startswith("hybrid_") for name in args.variants)
@@ -222,6 +263,7 @@ async def _run(args: argparse.Namespace) -> None:
             dataset,
             args.top_k,
             warmup_queries=args.warmup_queries,
+            source_aliases=source_aliases,
         )
     finally:
         await vector_store.close()
@@ -234,6 +276,8 @@ async def _run(args: argparse.Namespace) -> None:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "dataset": str(args.dataset),
             "dataset_sha256": _dataset_sha256(args.dataset),
+            "source_mapping": "api_document_registry" if args.api_url else "original_source_names",
+            "source_aliases": source_aliases,
             "n_samples": len(dataset),
             "top_k": args.top_k,
             "variants": args.variants,
@@ -268,6 +312,7 @@ def main() -> None:
         help="逗号分隔变量；可额外加入 hybrid_rrf_reranker",
     )
     parser.add_argument("--warmup-queries", type=int, default=2)
+    parser.add_argument("--api-url", default="", help="通过网页/API 上传文档时，指定服务地址以还原原始文件名")
     parser.add_argument("--out", default="benchmarks/results/agentic_ablation.json")
     args = parser.parse_args()
     args.top_k = [int(value) for value in args.top_k.split(",") if value.strip()]

@@ -47,7 +47,8 @@ file
 
 ```text
 question
-  → intent classification + query rewrite
+  ├→ intent classification
+  └→ query rewrite (与意图识别并行，汇合后继续)
   ├→ vector searches for rewritten queries
   └→ parameterized graph neighbor/path searches
   → full-content/chunk deduplicate + reciprocal-rank fusion (RRF)

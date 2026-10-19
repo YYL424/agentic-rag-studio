@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from benchmarks.eval_retrieval import EvalSample, evaluate, load_dataset
-from benchmarks.agentic_ablation import evaluate_variants
+from benchmarks.agentic_ablation import build_source_aliases, evaluate_variants
 
 
 @pytest.mark.asyncio
@@ -76,3 +76,35 @@ async def test_ablation_uses_same_dataset_and_excludes_warmup_rounds():
     assert calls == 2  # 一次 warm-up + 一次计入指标的查询
     assert results["self_rag"].retrieval.mrr == 1
     assert results["self_rag"].average_retrieval_rounds == 2
+
+
+@pytest.mark.asyncio
+async def test_ablation_maps_managed_upload_id_to_golden_source():
+    from agents.qa_agent import RetrievedContext
+
+    async def variant(_question: str, _top_k: int):
+        return [RetrievedContext("正确片段", "/app/uploads/abc123.md", 0.8, "vector")], 1
+
+    dataset = [EvalSample("问题", "正确片段", "right.md")]
+    aliases = build_source_aliases(
+        [{"file_id": "abc123.md", "original_name": "right.md", "status": "success"}],
+        dataset,
+    )
+    result = await evaluate_variants(
+        {"vector": variant}, dataset, [1], warmup_queries=0, source_aliases=aliases,
+    )
+    assert result["vector"].retrieval.per_k[0].recall == 1
+
+
+def test_ablation_rejects_missing_or_ambiguous_uploaded_sources():
+    dataset = [EvalSample("问题", "正确片段", "right.md")]
+    with pytest.raises(ValueError, match="缺失"):
+        build_source_aliases([], dataset)
+    with pytest.raises(ValueError, match="同名多份"):
+        build_source_aliases(
+            [
+                {"file_id": "a.md", "original_name": "right.md", "status": "success"},
+                {"file_id": "b.md", "original_name": "right.md", "status": "success"},
+            ],
+            dataset,
+        )

@@ -6,6 +6,8 @@
 
 一个面向企业文档的 Agentic RAG 工程原型：用 LangGraph 编排文档入库、混合检索问答和增量更新，将向量检索与 Neo4j 图检索并行融合，并提供 HITL 审核、SSE、MCP 和可复现评测。
 
+第一次接触 Agent？从 [零基础项目说明与操作指南](./docs/新手说明与操作指南.md) 开始。优化前后流程、量化实验方法与适用边界见 [优化分析与实测](./docs/优化分析与实测.md)。
+
 > 项目定位：可运行、可测试、适合技术作品集展示的参考实现，不宣称已经达到生产环境的高可用、权限治理和大规模性能要求。Python 是主实现；Java/Go 目录是对照原型，不与 Python 功能等价。
 
 ## 为什么值得看
@@ -17,6 +19,8 @@
 - **上传具备幂等语义**：SQLite 文档目录持久化文件状态，以 SHA-256 阻止重复入库，失败或驳回后可安全重试。
 - **边界有防护**：上传扩展名/大小/路径限制、可选 API Key、只读 Cypher 校验、XSS 安全文本渲染。
 - **结果可验证**：自动化测试、覆盖率门槛、Ruff、CI、真实 Qdrant/Neo4j roundtrip，以及带来源约束和数据哈希的检索评测。
+
+受控延迟实验中，意图识别与查询改写并行后，30 个问题重复 3 轮的问答工作流 P50 从 185.728 ms 降到 123.984 ms（降低 33.24%），90 次模拟输出一致。实验使用固定 `asyncio.sleep` 模拟模型 I/O，**不是线上真实模型延迟**；方法、配置和原始 JSON 见 [优化分析与实测](./docs/优化分析与实测.md)。
 
 ## 架构
 
@@ -40,7 +44,7 @@
 三条主链路：
 
 1. `parse → extract → [review] → vector store + knowledge graph`
-2. `intent/rewrite → vector retrieval || graph retrieval → rerank → self-RAG → answer`
+2. `intent || rewrite → vector retrieval || graph retrieval → rerank → self-RAG → answer`
 3. `change event → snapshot diff → delete stale provenance → reprocess changed chunks`
 
 详细设计与取舍见 [架构文档](./docs/architecture.md)。
@@ -205,10 +209,11 @@ python benchmarks/baseline_vs_modern.py \
 cd python
 python benchmarks/agentic_ablation.py \
   --dataset benchmarks/golden_set.jsonl \
-  --top-k 1,3,5
+  --top-k 1,3,5 \
+  --api-url http://localhost:8080
 ```
 
-该报告只评估“召回证据”，不等同于答案正确率；查询改写和 Self-RAG 会调用 `.env` 中配置的 LLM。输出包含各变量的 Recall/MRR/NDCG、P95 延迟、平均检索轮次及数据集 SHA-256。
+先通过网页上传 `benchmarks/sample_docs/` 中的 5 份文档。`--api-url` 根据受管文档目录还原原文件名，避免上传后的随机 ID 使来源约束误报；缺少或同名多份文档时直接报错。报告只评估“召回证据”，不等同于答案正确率；查询改写和 Self-RAG 会调用 `.env` 中配置的 LLM。输出包含各变量的 Recall/MRR/NDCG、P95 延迟、平均检索轮次及数据集 SHA-256。
 
 ## 项目结构
 
